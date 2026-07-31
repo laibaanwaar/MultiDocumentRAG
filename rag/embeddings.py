@@ -1,7 +1,7 @@
 import os
 
 from dotenv import load_dotenv
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
 
 
 load_dotenv()
@@ -10,29 +10,14 @@ load_dotenv()
 def get_embedding_dimension() -> int:
     """Return the configured embedding vector size."""
 
-    return int(
-        os.getenv("EMBEDDING_DIMENSION", "768")
-    )
+    return 384
 
 
-def get_embedding_model() -> GoogleGenerativeAIEmbeddings:
-    """Create and return the Gemini embedding model."""
+def get_embedding_model() -> HuggingFaceEmbeddings:
+    """Create and return the local sentence-transformers embedding model."""
 
-    api_key = os.getenv("GOOGLE_API_KEY")
-    model_name = os.getenv(
-        "EMBEDDING_MODEL",
-        "gemini-embedding-2",
-    )
-
-    if not api_key:
-        raise ValueError(
-            "GOOGLE_API_KEY is missing from the .env file."
-        )
-
-    return GoogleGenerativeAIEmbeddings(
-        model=model_name,
-        google_api_key=api_key,
-        output_dimensionality=get_embedding_dimension(),
+    return HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2",
     )
 
 
