@@ -9,3 +9,27 @@ ragas_results.json
 ragas_score_matrix.csvpredictions.jsonl
 predictions.jsonl
 ragas_score_matrix.csv
+
+# RAG evaluation outputs
+faithfulness_batch_*.csv
+faithfulness_batch_*.json
+faithfulness_batch_*.jsonl
+faithfulness_scores_all.csv
+
+relevancy_batch_*.csv
+relevancy_batch_*.json
+relevancy_batch_*.jsonl
+relevancy_scores_all*.csv
+
+precision_batch_*.csv
+precision_batch_*.json
+precision_batch_*.jsonl
+precision_scores_all.csv
+
+recall_batch_*.csv
+recall_batch_*.json
+recall_batch_*.jsonl
+recall_scores_all.csv
+
+local_evaluation_matrix.csv
+local_evaluation_summary.json
