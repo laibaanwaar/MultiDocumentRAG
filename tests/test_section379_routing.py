@@ -1,22 +1,7 @@
 from langchain_core.documents import Document
 
-from rag.answer_service import (
-    _build_section_lookup_clarification,
-    _filter_documents_by_mentioned_laws,
-    _prefer_ppc_documents,
-)
-from rag.intent_router import classify_question
-
-
-def _make_document(document_name: str, section_number: str = "379") -> Document:
-    return Document(
-        page_content="Sample text",
-        metadata={
-            "document_name": document_name,
-            "document_id": document_name.lower().replace(" ", "_"),
-            "section_number": section_number,
-        },
-    )
+from rag.intent_router import classify_question, route_question
+from rag.retriever import fetch_candidates
 
 
 def test_bare_section_379_uses_section_lookup_classification() -> None:
@@ -30,46 +15,101 @@ def test_vs_comparison_is_treated_as_a_comparison() -> None:
     )
 
 
-def test_section_379_clarification_mentions_all_matching_laws() -> None:
-    documents = [
-        _make_document("Pakistan Penal Code 1860"),
-        _make_document("Code of Criminal Procedure"),
-    ]
-
-    clarification = _build_section_lookup_clarification(
-        section_number="379",
-        documents=documents,
+def test_theft_scenario_routes_to_ppc_and_sections_378_379() -> None:
+    plan = route_question(
+        "Ali dishonestly took a mobile phone without the owner's consent."
     )
 
-    assert "Section 379 appears in multiple indexed laws" in clarification
-    assert "Pakistan Penal Code 1860" in clarification
-    assert "Code of Criminal Procedure" in clarification
+    assert plan.question_type == "fact_scenario"
+    assert plan.concepts == ["theft"]
+    assert plan.document_ids == ["ppc_1860"]
+    assert set(plan.section_hints) == {"378", "379"}
+    assert set(plan.provision_numbers) == {"378", "379"}
 
 
-def test_ppc_is_preferred_for_theft_punishment_queries() -> None:
-    documents = [
-        _make_document("Code of Criminal Procedure"),
-        _make_document("Pakistan Penal Code 1860"),
-    ]
-
-    preferred = _prefer_ppc_documents(documents)
-
-    assert [document.metadata["document_name"] for document in preferred] == [
-        "Pakistan Penal Code 1860",
-    ]
-
-
-def test_mentioned_law_filter_keeps_only_the_requested_document() -> None:
-    documents = [
-        _make_document("Pakistan Penal Code 1860"),
-        _make_document("Code of Criminal Procedure"),
-    ]
-
-    filtered = _filter_documents_by_mentioned_laws(
-        documents,
-        {"crpc"},
+def test_theft_scenario_uses_exact_section_hits_before_semantic_fallback() -> None:
+    exact_378 = Document(
+        page_content="Section 378. Theft.",
+        metadata={
+            "document_id": "ppc_1860",
+            "document_name": "Pakistan Penal Code 1860",
+            "provision_type": "section",
+            "provision_number": "378",
+            "section_number": "378",
+            "heading_only_chunk": False,
+            "chunk_id": "ppc_1860:section:378:1",
+        },
+    )
+    exact_379 = Document(
+        page_content="Section 379. Punishment for theft.",
+        metadata={
+            "document_id": "ppc_1860",
+            "document_name": "Pakistan Penal Code 1860",
+            "provision_type": "section",
+            "provision_number": "379",
+            "section_number": "379",
+            "heading_only_chunk": False,
+            "chunk_id": "ppc_1860:section:379:1",
+        },
+    )
+    semantic_411 = Document(
+        page_content="Section 411. Dishonestly receiving stolen property.",
+        metadata={
+            "document_id": "ppc_1860",
+            "document_name": "Pakistan Penal Code 1860",
+            "provision_type": "section",
+            "provision_number": "411",
+            "section_number": "411",
+            "heading_only_chunk": False,
+            "chunk_id": "ppc_1860:section:411:1",
+        },
     )
 
-    assert [document.metadata["document_name"] for document in filtered] == [
-        "Code of Criminal Procedure",
+    class DummyRetriever:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def search_with_scores(self, query: str, k: int, metadata_filter=None):
+            self.queries.append(query)
+
+            if query == "Ali dishonestly took a mobile phone without the owner's consent.":
+                return [
+                    (exact_378, 0.99),
+                    (exact_379, 0.98),
+                ]
+
+            return [
+                (semantic_411, 0.95),
+            ]
+
+    plan = route_question(
+        "Ali dishonestly took a mobile phone without the owner's consent."
+    )
+
+    retriever = DummyRetriever()
+    candidates, exact_documents = fetch_candidates(
+        retriever=retriever,
+        question=plan.original_question,
+        queries=plan.retrieval_queries,
+        question_type=plan.question_type,
+        section_number=plan.section_number,
+        detected_concepts=plan.concepts,
+        top_k=5,
+        neighbor_radius=2,
+        enable_neighbor_retrieval=False,
+        min_relevance_score=0.0,
+        document_ids=plan.document_ids,
+        provision_type=plan.provision_type,
+        provision_numbers=plan.provision_numbers,
+        article_number=plan.article_number,
+    )
+
+    assert [doc.metadata["section_number"] for doc in exact_documents] == [
+        "378",
+        "379",
+    ]
+    assert candidates == []
+    assert retriever.queries == [
+        "Ali dishonestly took a mobile phone without the owner's consent.",
+        "Ali dishonestly took a mobile phone without the owner's consent.",
     ]

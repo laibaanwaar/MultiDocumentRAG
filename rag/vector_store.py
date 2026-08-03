@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 from pathlib import Path
 from typing import Any
@@ -22,11 +24,6 @@ from rag.embeddings import (
 
 load_dotenv()
 
-
-# -------------------------------------------------------------------
-# Environment configuration
-# -------------------------------------------------------------------
-
 QDRANT_PATH = Path(
     os.getenv(
         "QDRANT_PATH",
@@ -36,7 +33,7 @@ QDRANT_PATH = Path(
 
 COLLECTION_NAME = os.getenv(
     "QDRANT_COLLECTION",
-    "pakistan_penal_code",
+    "pakistan_legal_knowledge_base",
 ).strip()
 
 DISTANCE_METRIC = Distance.COSINE
@@ -67,9 +64,6 @@ STRICT_COLLECTION_VALIDATION = (
     == "true"
 )
 
-
-# LangChain stores document metadata under the `metadata` payload key.
-# Qdrant supports nested payload paths using dot notation.
 PAYLOAD_INDEXES: tuple[
     tuple[str, PayloadSchemaType],
     ...,
@@ -83,7 +77,31 @@ PAYLOAD_INDEXES: tuple[
         PayloadSchemaType.KEYWORD,
     ),
     (
+        f"{METADATA_PAYLOAD_KEY}.document_title",
+        PayloadSchemaType.KEYWORD,
+    ),
+    (
+        f"{METADATA_PAYLOAD_KEY}.document_short_name",
+        PayloadSchemaType.KEYWORD,
+    ),
+    (
+        f"{METADATA_PAYLOAD_KEY}.document_type",
+        PayloadSchemaType.KEYWORD,
+    ),
+    (
+        f"{METADATA_PAYLOAD_KEY}.provision_type",
+        PayloadSchemaType.KEYWORD,
+    ),
+    (
+        f"{METADATA_PAYLOAD_KEY}.provision_number",
+        PayloadSchemaType.KEYWORD,
+    ),
+    (
         f"{METADATA_PAYLOAD_KEY}.section_number",
+        PayloadSchemaType.KEYWORD,
+    ),
+    (
+        f"{METADATA_PAYLOAD_KEY}.article_number",
         PayloadSchemaType.KEYWORD,
     ),
     (
@@ -91,11 +109,31 @@ PAYLOAD_INDEXES: tuple[
         PayloadSchemaType.KEYWORD,
     ),
     (
+        f"{METADATA_PAYLOAD_KEY}.primary_article",
+        PayloadSchemaType.KEYWORD,
+    ),
+    (
+        f"{METADATA_PAYLOAD_KEY}.section_identity",
+        PayloadSchemaType.KEYWORD,
+    ),
+    (
+        f"{METADATA_PAYLOAD_KEY}.provision_identity",
+        PayloadSchemaType.KEYWORD,
+    ),
+    (
         f"{METADATA_PAYLOAD_KEY}.chapter_number",
         PayloadSchemaType.KEYWORD,
     ),
     (
+        f"{METADATA_PAYLOAD_KEY}.part",
+        PayloadSchemaType.KEYWORD,
+    ),
+    (
         f"{METADATA_PAYLOAD_KEY}.legal_topic",
+        PayloadSchemaType.KEYWORD,
+    ),
+    (
+        f"{METADATA_PAYLOAD_KEY}.content_type",
         PayloadSchemaType.KEYWORD,
     ),
     (
@@ -115,6 +153,18 @@ PAYLOAD_INDEXES: tuple[
         PayloadSchemaType.INTEGER,
     ),
     (
+        f"{METADATA_PAYLOAD_KEY}.document_chunk_number",
+        PayloadSchemaType.INTEGER,
+    ),
+    (
+        f"{METADATA_PAYLOAD_KEY}.section_part_number",
+        PayloadSchemaType.INTEGER,
+    ),
+    (
+        f"{METADATA_PAYLOAD_KEY}.section_part_count",
+        PayloadSchemaType.INTEGER,
+    ),
+    (
         f"{METADATA_PAYLOAD_KEY}.heading_only_chunk",
         PayloadSchemaType.BOOL,
     ),
@@ -130,12 +180,11 @@ PAYLOAD_INDEXES: tuple[
         f"{METADATA_PAYLOAD_KEY}.page_quality_suspicious",
         PayloadSchemaType.BOOL,
     ),
+    (
+        f"{METADATA_PAYLOAD_KEY}.is_unsectioned_chunk",
+        PayloadSchemaType.BOOL,
+    ),
 )
-
-
-# -------------------------------------------------------------------
-# Configuration validation
-# -------------------------------------------------------------------
 
 def validate_vector_store_settings() -> None:
     """Validate local Qdrant configuration before opening storage."""
@@ -171,7 +220,7 @@ def prepare_storage_directory() -> Path:
     """
     Create and resolve the local Qdrant storage directory.
 
-    Local mode persists its database files inside this directory.
+    Local mode persists all collection data inside this folder.
     """
 
     resolved_path = QDRANT_PATH.expanduser().resolve()
@@ -190,16 +239,11 @@ def prepare_storage_directory() -> Path:
     return resolved_path
 
 
-# -------------------------------------------------------------------
-# Collection inspection
-# -------------------------------------------------------------------
-
 def _extract_vector_params(
     collection_info: Any,
 ) -> Any:
     """
-    Extract vector configuration across supported qdrant-client
-    response shapes.
+    Extract vector configuration across qdrant-client response shapes.
     """
 
     try:
@@ -217,10 +261,9 @@ def _get_single_vector_params(
     vectors_config: Any,
 ) -> Any:
     """
-    Return VectorParams for a collection with one unnamed vector.
+    Return VectorParams for one unnamed dense vector.
 
-    Named-vector collections return a dictionary and are not compatible
-    with the current dense-only configuration.
+    The current project does not use named or sparse vectors.
     """
 
     if isinstance(vectors_config, dict):
@@ -249,11 +292,11 @@ def validate_existing_collection(
     client: QdrantClient,
 ) -> None:
     """
-    Validate that an existing collection matches the active embedding
-    model and distance metric.
+    Validate an existing collection against MiniLM configuration.
 
-    A dimension mismatch must be fixed by recreating the collection;
-    otherwise document insertion or retrieval can fail unpredictably.
+    all-MiniLM-L6-v2 produces 384-dimensional vectors. A previous
+    Gemini collection commonly uses 768 dimensions and must therefore
+    be recreated before ingestion.
     """
 
     collection_info = client.get_collection(
@@ -271,13 +314,13 @@ def validate_existing_collection(
     if vector_params is None:
         message = (
             "The existing Qdrant collection does not use the expected "
-            "single unnamed dense vector configuration."
+            "single unnamed dense-vector configuration."
         )
 
         if STRICT_COLLECTION_VALIDATION:
             raise RuntimeError(
                 f"{message}\n"
-                "Run ingestion with reset=True to recreate it."
+                "Run ingestion with --reset to recreate it."
             )
 
         print(f"Warning: {message}")
@@ -336,20 +379,16 @@ def validate_existing_collection(
     if STRICT_COLLECTION_VALIDATION:
         raise RuntimeError(
             f"{message}\n"
-            "Run ingestion with reset=True to recreate the collection."
+            "Run ingestion with --reset to recreate the collection."
         )
 
     print(f"Warning: {message}")
 
 
-# -------------------------------------------------------------------
-# Collection creation and indexes
-# -------------------------------------------------------------------
-
 def create_collection(
     client: QdrantClient,
 ) -> None:
-    """Create a new dense-vector Qdrant collection."""
+    """Create a 384-dimensional dense-vector collection."""
 
     client.create_collection(
         collection_name=COLLECTION_NAME,
@@ -360,7 +399,7 @@ def create_collection(
     )
 
     print(
-        f"Created Qdrant collection: "
+        "Created Qdrant collection: "
         f"{COLLECTION_NAME}"
     )
 
@@ -371,16 +410,19 @@ def create_payload_indexes(
     """
     Create indexes for metadata fields used by legal retrieval filters.
 
-    Payload indexes improve filtered retrieval. In some local Qdrant
-    versions they may be accepted but have little performance impact;
-    failures are reported without destroying the collection.
+    Local Qdrant may warn that payload indexes have no performance
+    effect. Filtering still works in that mode.
     """
 
     if not CREATE_PAYLOAD_INDEXES:
+        print(
+            "Qdrant payload index creation is disabled."
+        )
         return
 
     created_count = 0
-    skipped_count = 0
+    existing_count = 0
+    unsupported_reported = False
 
     for field_name, field_schema in PAYLOAD_INDEXES:
         try:
@@ -408,28 +450,30 @@ def create_payload_indexes(
             )
 
             if already_exists:
-                skipped_count += 1
+                existing_count += 1
                 continue
 
             if unsupported_in_local_mode:
-                print(
-                    "Warning: payload indexes are not fully supported "
-                    "by this Qdrant local-mode version. Retrieval will "
-                    "still work, but metadata filtering may be slower."
-                )
-                return
+                if not unsupported_reported:
+                    print(
+                        "Warning: this Qdrant local-mode version does "
+                        "not use payload indexes for optimization. "
+                        "Metadata filtering will still work."
+                    )
+                    unsupported_reported = True
+
+                continue
 
             raise RuntimeError(
                 "Failed to create Qdrant payload index "
                 f"'{field_name}': {error}"
             ) from error
 
-    if created_count or skipped_count:
-        print(
-            "Qdrant payload indexes ready: "
-            f"{created_count} created, "
-            f"{skipped_count} already present."
-        )
+    print(
+        "Qdrant payload indexes checked: "
+        f"{created_count} created, "
+        f"{existing_count} already present."
+    )
 
 
 # -------------------------------------------------------------------
@@ -439,7 +483,7 @@ def create_payload_indexes(
 def get_collection_points_count(
     client: QdrantClient,
 ) -> int:
-    """Return the exact number of points currently stored."""
+    """Return the exact number of stored vectors."""
 
     count_result = client.count(
         collection_name=COLLECTION_NAME,
@@ -454,7 +498,7 @@ def get_collection_points_count(
 def verify_empty_collection(
     client: QdrantClient,
 ) -> None:
-    """Ensure a freshly reset collection contains no points."""
+    """Ensure a newly created collection contains no vectors."""
 
     points_count = get_collection_points_count(
         client
@@ -467,9 +511,26 @@ def verify_empty_collection(
         )
 
 
-# -------------------------------------------------------------------
-# Public vector-store factory
-# -------------------------------------------------------------------
+def reset_collection(
+    client: QdrantClient,
+) -> None:
+    """Delete and recreate the configured collection."""
+
+    if client.collection_exists(
+        collection_name=COLLECTION_NAME
+    ):
+        print(
+            "Deleting existing collection: "
+            f"{COLLECTION_NAME}"
+        )
+
+        client.delete_collection(
+            collection_name=COLLECTION_NAME
+        )
+
+    create_collection(client)
+    verify_empty_collection(client)
+
 
 def create_vector_store(
     reset: bool = False,
@@ -482,19 +543,11 @@ def create_vector_store(
 
     Args:
         reset:
-            When True, delete the existing collection and create a
-            completely fresh collection. Use this during ingestion after
-            changing cleaning, chunking, metadata, or embedding settings.
+            Delete and recreate the collection. Use this after changing
+            PDFs, cleaning, chunking, metadata, or embedding settings.
 
     Returns:
-        A tuple containing:
-        - configured LangChain QdrantVectorStore;
-        - underlying QdrantClient.
-
-    Raises:
-        RuntimeError:
-            If the existing collection is incompatible, reset fails, or
-            local storage is locked by another process.
+        A configured QdrantVectorStore and its QdrantClient.
     """
 
     validate_vector_store_settings()
@@ -514,29 +567,17 @@ def create_vector_store(
             )
         )
 
-        if reset and collection_exists:
-            print(
-                "Deleting existing collection: "
-                f"{COLLECTION_NAME}"
-            )
+        if reset:
+            reset_collection(client)
 
-            client.delete_collection(
-                collection_name=COLLECTION_NAME
-            )
-
-            collection_exists = False
-
-        if not collection_exists:
+        elif not collection_exists:
             create_collection(client)
             verify_empty_collection(client)
-        else:
-            validate_existing_collection(
-                client
-            )
 
-        create_payload_indexes(
-            client
-        )
+        else:
+            validate_existing_collection(client)
+
+        create_payload_indexes(client)
 
         vector_store = QdrantVectorStore(
             client=client,
@@ -567,7 +608,11 @@ def create_vector_store(
             f"{get_embedding_dimension()}"
         )
         print(
-            f"Points currently stored: "
+            "Distance metric: "
+            f"{DISTANCE_METRIC.value}"
+        )
+        print(
+            "Points currently stored: "
             f"{points_count}"
         )
 
@@ -589,16 +634,16 @@ def create_vector_store(
         if storage_locked:
             raise RuntimeError(
                 "Qdrant local storage is already in use. Stop "
-                "query_cli.py, ingestion, or any other Python process "
+                "query_cli.py, ingestion, or another Python process "
                 "using the same QDRANT_PATH, then try again."
             ) from error
 
         raise
 
 
-# -------------------------------------------------------------------
-# Diagnostic helper
-# -------------------------------------------------------------------
+# Backward-compatible alias for code that describes the operation as
+# opening an existing vector store.
+open_vector_store = create_vector_store
 
 def display_vector_store_status() -> None:
     """Open Qdrant and print collection diagnostics."""
@@ -633,7 +678,7 @@ def display_vector_store_status() -> None:
             f"{DISTANCE_METRIC.value}"
         )
         print(
-            f"Collection status: "
+            "Collection status: "
             f"{getattr(collection_info, 'status', 'Unknown')}"
         )
 

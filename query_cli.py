@@ -1,45 +1,62 @@
-from rag.answer_service import (
+from __future__ import annotations
+
+from typing import Any
+
+from rag.rag_chain import (
     answer_question,
     create_rag_components,
 )
 
 
-def display_answer(result: dict) -> None:
-    """Display the generated answer and source references."""
+def display_answer(result: dict[str, Any]) -> None:
+    """Print the answer and its supporting legal sources."""
 
     print("\n" + "=" * 70)
     print("ANSWER")
     print("=" * 70)
+    print(result.get("answer", "No answer generated."))
 
-    print(result["answer"])
+    sources = result.get("sources", [])
+
+    if not sources:
+        print("\nNo supporting sources were found.")
+        return
 
     print("\n" + "=" * 70)
     print("SOURCES")
     print("=" * 70)
 
-    sources = result.get("sources", [])
-
-    if not sources:
-        print("No supporting sources were found.")
-        return
-
     for source in sources:
+        provision_type = (
+            source.get("provision_type")
+            or "Provision"
+        ).title()
+
+        provision_number = (
+            source.get("provision_number")
+            or "Unsectioned"
+        )
+
         print(
-            f"- [{source['label']}] "
-            f"{source['document_name']} | "
-            f"Page: {source['page_number']} | "
-            f"Chunk: {source['chunk_number']}"
+            f"- [{source.get('label', 'Source')}] "
+            f"{source.get('document_name', 'Unknown document')} | "
+            f"{provision_type} {provision_number} | "
+            f"Pages: {source.get('page_range', 'Unknown')}"
         )
 
 
 def main() -> None:
+    """Run the command-line legal RAG assistant."""
+
     client = None
 
     try:
         print("=" * 70)
-        print("PAKISTAN PENAL CODE RAG ASSISTANT")
+        print("PAKISTAN MULTI-DOCUMENT LEGAL RAG ASSISTANT")
         print("=" * 70)
-
+        print(
+            "Indexed laws: PPC, Constitution, ATA, and AMLA"
+        )
         print(
             "Opening the existing Qdrant collection..."
         )
@@ -48,8 +65,10 @@ def main() -> None:
             create_rag_components()
         )
 
-        print("RAG assistant is ready.")
-        print("Type 'exit' or 'quit' to stop.")
+        print(
+            "RAG assistant is ready. "
+            "Type 'exit' or 'quit' to stop."
+        )
 
         while True:
             question = input(
@@ -60,7 +79,9 @@ def main() -> None:
                 "exit",
                 "quit",
             }:
-                print("Closing the RAG assistant.")
+                print(
+                    "Closing the RAG assistant."
+                )
                 break
 
             if len(question) < 3:
@@ -83,10 +104,14 @@ def main() -> None:
             display_answer(result)
 
     except KeyboardInterrupt:
-        print("\nRAG assistant stopped.")
+        print(
+            "\nRAG assistant stopped."
+        )
 
     except Exception as error:
-        print(f"\nRAG error: {error}")
+        print(
+            f"\nRAG error: {error}"
+        )
 
     finally:
         if client is not None:

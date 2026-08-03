@@ -1,104 +1,107 @@
 from rag.schemas import RetrievalConfidence
 
 
+TASK_INSTRUCTIONS = {
+    "fact_scenario": """
+Answer the scenario using only the retrieved excerpts.
+State the strongest applicable provision first, then include any other materially relevant provisions if they change the legal result.
+Do not stop after the first relevant sentence when more relevant context exists.
+""".strip(),
+
+    "punishment": """
+Answer the punishment completely but stay focused on the retrieved provision.
+Include the law name, Section or Article number, heading, imprisonment limits, fine, forfeiture, and any material condition or exception.
+Cover all punishment options present in the excerpt and do not stop after the first relevant sentence when more relevant context exists.
+""".strip(),
+
+    "section_lookup": """
+Answer the lookup completely but stay focused on the retrieved provision.
+Include the law name, Section or Article number, heading, all materially relevant clauses, explanations, exceptions, consequences, and any punishment where relevant.
+Do not stop after the first relevant sentence when more relevant context exists.
+""".strip(),
+
+    "article_lookup": """
+Answer the lookup completely but stay focused on the retrieved provision.
+Include the law name, Article number, heading, all materially relevant clauses, explanations, exceptions, safeguards, remedies, and consequences.
+Do not stop after the first relevant sentence when more relevant context exists.
+""".strip(),
+
+    "definition": """
+State the relevant law and provision, then give the full definition in plain language while preserving its legal meaning and essential elements.
+Include any materially relevant explanation or exception in the retrieved excerpt.
+Do not stop after the first relevant sentence when more relevant context exists.
+""".strip(),
+
+    "constitutional_right": """
+Identify the relevant constitutional Article and explain the right, safeguard,
+scope, and limitation supported by the retrieved text.
+""".strip(),
+
+    "comparison": """
+Compare only the requested laws, provisions, or concepts.
+Identify each provision, explain the main difference, and include any materially relevant clause, exception, or consequence.
+Do not stop after the first relevant sentence when more relevant context exists.
+""".strip(),
+
+    "general": """
+Answer the user's question directly, then provide only the minimum supporting explanation.
+Prefer the strongest relevant provision.
+""".strip(),
+}
+
+
 def build_grounded_prompt(
     question: str,
     question_type: str,
     context: str,
     confidence: RetrievalConfidence,
 ) -> str:
-    task_instructions = ""
+    """Build a concise, citation-grounded prompt for Pakistan legal documents."""
 
-    if question_type == "fact_scenario":
-        task_instructions = """
-Answer the factual scenario directly and concisely.
+    if not question.strip():
+        raise ValueError("Question cannot be empty.")
 
-Use this structure only when helpful:
-1. Primary provision - state the strongest provision and briefly explain why the stated facts fit it.
-2. Close alternative - include only if a genuinely missing fact could change the classification.
-3. Missing facts - list only facts needed to distinguish the primary provision from a close alternative.
+    if not context.strip():
+        raise ValueError("Retrieved context cannot be empty.")
 
-Do not force all headings when a short paragraph is enough. Normally discuss no more than two provisions.
-""".strip()
-    elif question_type == "punishment":
-        task_instructions = """
-Answer only the punishment asked by the user.
-
-Required response:
-- State the applicable punishment section.
-- State the maximum imprisonment term.
-- State whether a fine may also be imposed.
-- Keep the response to about 1 to 3 short sentences unless the user asks for more detail.
-""".strip()
-    elif question_type == "section_lookup":
-        task_instructions = """
-Answer the requested section directly.
-
-Required response:
-- Give the section number and heading.
-- Summarize the operative rule in a short paragraph.
-- Include explanations, illustrations, exceptions, or punishment only when they are part of that exact section and materially help answer the question.
-""".strip()
-    elif question_type == "definition":
-        task_instructions = """
-Give the requested legal definition directly and concisely.
-
-Required response:
-- Name the relevant section.
-- State the definition in plain language while preserving the legal meaning.
-- Mention only the essential elements needed to understand it.
-""".strip()
-    elif question_type == "comparison":
-        task_instructions = """
-Compare only the provisions or legal concepts actually requested.
-
-Required response:
-- Identify each provision.
-- State the key difference in elements, purpose, conditions, or punishment.
-- Use short bullets or a compact comparison structure.
-- End with one concise sentence describing the practical distinction.
-""".strip()
-    else:
-        task_instructions = """
-Answer the user's exact question first.
-
-Then give only the minimum explanation needed to support the answer.
-Prefer one strongest provision. Mention another provision only when it materially changes, qualifies, or clarifies the answer.
-""".strip()
+    task = TASK_INSTRUCTIONS.get(
+        question_type,
+        TASK_INSTRUCTIONS["general"],
+    )
 
     return f"""
-You are a retrieval-grounded assistant for the Pakistan Penal Code.
+You are a retrieval-grounded assistant for these Pakistan legal documents:
+- Pakistan Penal Code, 1860
+- Constitution of Pakistan, 1973
+- Anti-Terrorism Act, 1997
+- Anti-Money Laundering Act, 2010
 
-Use only the retrieved excerpts.
-
-Retrieval confidence: {confidence.label}
-Confidence score: {confidence.score}
-Top similarity: {confidence.top_similarity}
-Average similarity: {confidence.average_similarity}
-Selected section count: {confidence.section_count}
-Concept coverage: {confidence.concept_coverage}
+Use only the retrieved excerpts. Do not rely on outside legal knowledge.
 
 Rules:
-1. Do not use outside legal knowledge.
-2. Do not invent sections, elements, exceptions, punishments or facts.
-3. Cite every legal claim using [Source N].
-4. Mention a section only when it appears in the excerpts.
-5. Rank the strongest directly supported provision first.
-6. Do not list every retrieved provision.
-7. Answer the user's exact question first.
-8. Match the response length to the question.
-9. Do not force a fixed template or unnecessary headings.
+1. Answer the exact question first.
+2. Do not begin the answer with a standalone citation.
+3. Place [Source N] after each paragraph or materially distinct legal claim.
+4. Use citations exactly as [Source N] with no extra text inside the brackets.
+5. Mention only laws and provisions present in the excerpts.
+6. Do not invent sections, articles, facts, exceptions, punishments, or conclusions.
+7. Distinguish Section references from Constitution Article references.
+8. For comparisons, keep each law and provision clearly separated.
+9. If the retrieved context is incomplete, clearly say that the complete provision was not retrieved.
+10. Do not stop after the first relevant sentence when more relevant context exists.
+11. Keep the answer focused on the requested provision and include all materially relevant details from the excerpt.
+12. Do not mention retrieval scores unless directly relevant.
 
 Question type: {question_type}
+Retrieval confidence: {confidence.label}
 
-{task_instructions}
+Task:
+{task}
 
 Retrieved excerpts:
-
 {context}
 
 User question:
-
 {question}
 
 Grounded answer:

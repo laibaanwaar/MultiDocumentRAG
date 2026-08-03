@@ -1,26 +1,31 @@
-"""Backward-compatible chain wrapper for the modular RAG architecture."""
+"""Compatibility wrapper for the modular RAG pipeline."""
 
-from rag.answer_service import answer_question as _answer_question
-from rag.answer_service import create_rag_components
+from typing import Any
+
+from rag.answer_service import (
+    answer_question as run_answer_service,
+    create_rag_components,
+)
 from rag.intent_router import get_retrieval_k, route_question
 
 
 def answer_question(
     question: str,
-    retriever,
-    chat_model,
+    retriever: Any,
+    chat_model: Any,
     top_k: int = 5,
-):
-    plan = route_question(question)
-    retrieval_k = get_retrieval_k(
-        plan.question_type,
-        top_k=top_k,
-    )
+) -> dict[str, Any]:
+    """Route a question and pass it to the answer service."""
 
-    return _answer_question(
+    plan = route_question(question)
+
+    return run_answer_service(
         question=question,
         retriever=retriever,
         chat_model=chat_model,
         plan=plan,
-        retrieval_k=retrieval_k,
+        retrieval_k=get_retrieval_k(
+            plan.question_type,
+            top_k,
+        ),
     )
