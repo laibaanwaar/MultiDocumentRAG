@@ -1,0 +1,5 @@
+{"faithfulness": 1.0, "sample_id": 1, "question": "If someone invites another person to provide money and intends it will be used for terrorism, which section applies?"}
+{"faithfulness": 0.25, "sample_id": 2, "question": "If someone uses money or other property for terrorism, which section applies?"}
+{"faithfulness": 0.7222222222222222, "sample_id": 3, "question": "If someone enters into an arrangement making money available and has reason to suspect it may be used for terrorism, which section applies?"}
+{"faithfulness": 1.0, "sample_id": 4, "question": "If someone conceals terrorist property by transfer to nominees, which section applies?"}
+{"faithfulness": 1.0, "sample_id": 5, "question": "If a person learns in the course of business that another person may have committed an offence under the Act and does not disclose it, which section applies?"}

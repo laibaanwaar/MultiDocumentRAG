@@ -1,0 +1,5 @@
+{"faithfulness": 1.0, "sample_id": 1, "question": "What is the punishment under Section 11F(2) for belonging to a proscribed organization?"}
+{"faithfulness": 0.25, "sample_id": 2, "question": "What is the punishment under Section 11F(6) for supporting, addressing, or collecting money for a proscribed organization?"}
+{"faithfulness": 0.5, "sample_id": 3, "question": "What is the punishment under Section 11G(2) for wearing or displaying a proscribed organization's uniform or symbols?"}
+{"faithfulness": 1.0, "sample_id": 4, "question": "What is the punishment under Section 11EE(4) for violating a direction or bond order?"}
+{"faithfulness": 1.0, "sample_id": 5, "question": "What is the punishment under Section 11EEEEE(2) for contravening a preventive detention disposal order?"}

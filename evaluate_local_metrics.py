@@ -39,8 +39,9 @@ REJECTION_PHRASES = (
 
 @dataclass
 class LocalSample:
-    sample_id: int
+    sample_id: str
     sample_key: str
+    raw_id: str
     category: str
     question: str
     reference: str
@@ -96,17 +97,56 @@ def _expected_provision_numbers_from_row(row: dict[str, Any]) -> list[str]:
     return []
 
 
+def _first_str_value(row: dict[str, Any], keys: list[str]) -> str:
+    for key in keys:
+        value = row.get(key)
+        if value is None:
+            continue
+
+        text = str(value).strip()
+        if text:
+            return text
+
+    return ""
+
+
 def _load_samples(path: Path) -> list[LocalSample]:
     rows = _read_jsonl(path)
     samples: list[LocalSample] = []
 
-    for index, row in enumerate(rows, start=1):
-        sample_id = index
-        sample_key = str(row.get("id") or row.get("sample_id") or index)
+    for row in rows:
+        sample_key = _first_str_value(
+            row,
+            ["sample_key", "sample_id", "id"],
+        )
+        sample_id = _first_str_value(
+            row,
+            ["sample_id", "sample_key", "id"],
+        )
+        raw_id = _first_str_value(
+            row,
+            ["id", "sample_id", "sample_key"],
+        )
+
+        if not sample_id and not sample_key and not raw_id:
+            raise ValueError(
+                "Each sample must contain a non-empty sample_key, sample_id, or id."
+            )
+
+        if not sample_key:
+            sample_key = sample_id or raw_id
+
+        if not sample_id:
+            sample_id = sample_key or raw_id
+
+        if not raw_id:
+            raw_id = sample_id or sample_key
+
         samples.append(
             LocalSample(
                 sample_id=sample_id,
                 sample_key=sample_key,
+                raw_id=raw_id,
                 category=str(row.get("category") or "").strip(),
                 question=str(row.get("question") or "").strip(),
                 reference=str(row.get("reference") or "").strip(),
@@ -127,19 +167,37 @@ def _load_samples(path: Path) -> list[LocalSample]:
     return samples
 
 
-def _load_predictions(path: Path) -> dict[int, dict[str, Any]]:
+def _load_predictions(path: Path) -> dict[str, dict[str, Any]]:
     rows = _read_jsonl(path)
-    predictions: dict[int, dict[str, Any]] = {}
+    predictions: dict[str, dict[str, Any]] = {}
 
     for row in rows:
-        try:
-            sample_id = int(str(row.get("sample_id")).strip())
-        except (TypeError, ValueError):
+        prediction_key = _first_str_value(
+            row,
+            ["sample_key", "sample_id", "id"],
+        )
+
+        if not prediction_key:
             continue
 
-        predictions[sample_id] = row
+        predictions[prediction_key] = row
 
     return predictions
+
+
+def _resolve_prediction(
+    sample: LocalSample,
+    predictions: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    for key in (
+        sample.sample_key,
+        sample.sample_id,
+        sample.raw_id,
+    ):
+        if key and key in predictions:
+            return predictions[key]
+
+    return None
 
 
 def _map_document_label(label: str) -> str | None:
@@ -220,9 +278,28 @@ def _has_citation(response: str) -> bool:
     return bool(re.search(r"\[Source\s+\d+\]", response))
 
 
+def _get_generated_response(prediction: dict[str, Any]) -> str:
+    return str(
+        prediction.get("response")
+        or prediction.get("answer")
+        or prediction.get("generated_answer")
+        or ""
+    ).strip()
+
+
 def _is_invalid_rejection(response: str) -> bool:
     normalized = response.lower()
     return any(phrase in normalized for phrase in REJECTION_PHRASES)
+
+
+INVALID_PROVISION_CATEGORIES = {
+    "invalid_section",
+    "nonexistent_provision",
+}
+
+
+def _is_invalid_provision_category(category: str) -> bool:
+    return category in INVALID_PROVISION_CATEGORIES
 
 
 def _cosine_similarity_matrix(
@@ -414,7 +491,7 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def build_metrics(
     samples: list[LocalSample],
-    predictions: dict[int, dict[str, Any]],
+    predictions: dict[str, dict[str, Any]],
     model: SentenceTransformer,
     hit_k: int,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -425,8 +502,8 @@ def build_metrics(
     usable_samples: list[tuple[LocalSample, dict[str, Any]]] = []
 
     for sample in samples:
-        prediction = predictions.get(sample.sample_id, {})
-        response = str(prediction.get("response") or "").strip()
+        prediction = _resolve_prediction(sample, predictions) or {}
+        response = _get_generated_response(prediction)
         questions.append(sample.question)
         responses.append(response)
         usable_samples.append((sample, prediction))
@@ -444,7 +521,7 @@ def build_metrics(
     context_recall_scores: list[float] = []
 
     for index, (sample, prediction) in enumerate(usable_samples):
-        response = str(prediction.get("response") or "").strip()
+        response = _get_generated_response(prediction)
         parsed_contexts = _flatten_contexts(prediction.get("retrieved_contexts", []))
         total_retrieved_contexts = _count_retrieved_contexts(
             prediction.get("retrieved_contexts", [])
@@ -494,7 +571,7 @@ def build_metrics(
         assert 0.0 <= context_precision_local <= 1.0
         assert 0.0 <= context_recall_local <= 1.0
 
-        if sample.category == "nonexistent_provision":
+        if _is_invalid_provision_category(sample.category):
             invalid_rejection = _is_invalid_rejection(response)
             invalid_rejection_scores.append(1.0 if invalid_rejection else 0.0)
             invalid_rejection_value = 1.0 if invalid_rejection else 0.0
@@ -549,7 +626,12 @@ def build_metrics(
         },
         "counts": {
             "samples_with_predictions": sum(
-                1 for sample in samples if sample.sample_id in predictions
+                1 for sample in samples if _resolve_prediction(sample, predictions)
+            ),
+            "invalid_provision_samples": sum(
+                1
+                for sample in samples
+                if _is_invalid_provision_category(sample.category)
             ),
             "nonexistent_provision_samples": sum(
                 1 for sample in samples if sample.category == "nonexistent_provision"
@@ -605,6 +687,16 @@ def main() -> int:
 
     samples = _load_samples(args.samples)
     predictions = _load_predictions(args.predictions)
+
+    matched_predictions = sum(
+        1 for sample in samples if _resolve_prediction(sample, predictions)
+    )
+    missing_predictions = len(samples) - matched_predictions
+
+    print(f"loaded samples: {len(samples)}")
+    print(f"loaded predictions: {len(predictions)}")
+    print(f"matched predictions: {matched_predictions}")
+    print(f"missing predictions: {missing_predictions}")
 
     model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 

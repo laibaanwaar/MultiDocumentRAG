@@ -1,0 +1,63 @@
+{
+  "summary": "Per-sample RAGAS evaluation completed.",
+  "metrics": [
+    [
+      "faithfulness",
+      0.8
+    ]
+  ],
+  "row_scores": [
+    {
+      "faithfulness": 1.0,
+      "sample_id": 1,
+      "question": "How do Sections 11B and 11D differ?"
+    },
+    {
+      "faithfulness": 0.25,
+      "sample_id": 2,
+      "question": "How do Sections 11EE and 11EEE differ?"
+    },
+    {
+      "faithfulness": 0.75,
+      "sample_id": 3,
+      "question": "Which section creates the Proscription reviw committee?"
+    },
+    {
+      "faithfulness": 1.0,
+      "sample_id": 4,
+      "question": "Which section covers prevntive detention for inquiry?"
+    },
+    {
+      "faithfulness": 1.0,
+      "sample_id": 5,
+      "question": "Invalid test: Is there a Section 999 in the Anti-Terrorism Act, 1997?"
+    }
+  ],
+  "rows": [
+    {
+      "question": "How do Sections 11B and 11D differ?",
+      "reference": "Section 11B is the formal proscription provision that lets the Federal Government list an organization as proscribed in the First Schedule on specified grounds, while section 11D is an observation-order provision that keeps an organization under observation if it is listed in the Second Schedule or operates under the same name.",
+      "sample_id": 1
+    },
+    {
+      "question": "How do Sections 11EE and 11EEE differ?",
+      "reference": "Section 11EE is about proscription of a person and the restrictions that may follow listing in the Fourth Schedule, while section 11EEE empowers the Government to order the arrest and detention of a listed person for a period that may be extended up to twelve months.",
+      "sample_id": 2
+    },
+    {
+      "question": "Which section creates the Proscription reviw committee?",
+      "reference": "Section 11CC creates the Proscription Review Committee, comprising three government officers, including a representative of the Ministry of Law and Justice, to decide review applications under sections 11C and 11EE.",
+      "sample_id": 3
+    },
+    {
+      "question": "Which section covers prevntive detention for inquiry?",
+      "reference": "Section 11EEEE covers preventive detention for inquiry for persons concerned in certain offences relating to the security or defense of Pakistan, public order, or other specified matters.",
+      "sample_id": 4
+    },
+    {
+      "question": "Invalid test: Is there a Section 999 in the Anti-Terrorism Act, 1997?",
+      "reference": "Invalid test: no. Section 999 does not appear in the PDF provided, and the table of contents and numbered provisions do not include any Section 999.",
+      "sample_id": 5
+    }
+  ]
+}

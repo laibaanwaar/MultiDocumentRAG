@@ -1,0 +1,63 @@
+{
+  "summary": "Per-sample RAGAS evaluation completed.",
+  "metrics": [
+    [
+      "faithfulness",
+      0.75
+    ]
+  ],
+  "row_scores": [
+    {
+      "faithfulness": 1.0,
+      "sample_id": 1,
+      "question": "What is the punishment under Section 11F(2) for belonging to a proscribed organization?"
+    },
+    {
+      "faithfulness": 0.25,
+      "sample_id": 2,
+      "question": "What is the punishment under Section 11F(6) for supporting, addressing, or collecting money for a proscribed organization?"
+    },
+    {
+      "faithfulness": 0.5,
+      "sample_id": 3,
+      "question": "What is the punishment under Section 11G(2) for wearing or displaying a proscribed organization's uniform or symbols?"
+    },
+    {
+      "faithfulness": 1.0,
+      "sample_id": 4,
+      "question": "What is the punishment under Section 11EE(4) for violating a direction or bond order?"
+    },
+    {
+      "faithfulness": 1.0,
+      "sample_id": 5,
+      "question": "What is the punishment under Section 11EEEEE(2) for contravening a preventive detention disposal order?"
+    }
+  ],
+  "rows": [
+    {
+      "question": "What is the punishment under Section 11F(2) for belonging to a proscribed organization?",
+      "reference": "Section 11F(2) provides a penalty of imprisonment not exceeding six months and a fine for belonging or professing to belong to a proscribed organization.",
+      "sample_id": 1
+    },
+    {
+      "question": "What is the punishment under Section 11F(6) for supporting, addressing, or collecting money for a proscribed organization?",
+      "reference": "Section 11F(6) says that offences under subsections (3), (4), and (5) are punishable with imprisonment of not less than one year and not more than five years, and a fine.",
+      "sample_id": 2
+    },
+    {
+      "question": "What is the punishment under Section 11G(2) for wearing or displaying a proscribed organization's uniform or symbols?",
+      "reference": "Section 11G(2) says a person who commits the offence under section 11G(1) is liable to imprisonment for a term that may extend to five years, or fine, or both.",
+      "sample_id": 3
+    },
+    {
+      "question": "What is the punishment under Section 11EE(4) for violating a direction or bond order?",
+      "reference": "Section 11EE(4) says that a person who violates a direction or order of the Federal Government, or any term of the bond, is punishable with imprisonment for a term that may extend to three years, or with fine, or with both.",
+      "sample_id": 4
+    },
+    {
+      "question": "What is the punishment under Section 11EEEEE(2) for contravening a preventive detention disposal order?",
+      "reference": "Section 11EEEEE(2) says that contravention of an order made under subsection (1) is punishable with rigorous imprisonment for a term that may extend to two years, or with fine, or with both.",
+      "sample_id": 5
+    }
+  ]
+}

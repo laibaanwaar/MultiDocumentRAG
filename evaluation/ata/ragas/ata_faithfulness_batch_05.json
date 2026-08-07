@@ -1,0 +1,63 @@
+{
+  "summary": "Per-sample RAGAS evaluation completed.",
+  "metrics": [
+    [
+      "faithfulness",
+      0.7944444444444445
+    ]
+  ],
+  "row_scores": [
+    {
+      "faithfulness": 1.0,
+      "sample_id": 1,
+      "question": "If someone invites another person to provide money and intends it will be used for terrorism, which section applies?"
+    },
+    {
+      "faithfulness": 0.25,
+      "sample_id": 2,
+      "question": "If someone uses money or other property for terrorism, which section applies?"
+    },
+    {
+      "faithfulness": 0.7222222222222222,
+      "sample_id": 3,
+      "question": "If someone enters into an arrangement making money available and has reason to suspect it may be used for terrorism, which section applies?"
+    },
+    {
+      "faithfulness": 1.0,
+      "sample_id": 4,
+      "question": "If someone conceals terrorist property by transfer to nominees, which section applies?"
+    },
+    {
+      "faithfulness": 1.0,
+      "sample_id": 5,
+      "question": "If a person learns in the course of business that another person may have committed an offence under the Act and does not disclose it, which section applies?"
+    }
+  ],
+  "rows": [
+    {
+      "question": "If someone invites another person to provide money and intends it will be used for terrorism, which section applies?",
+      "reference": "Section 11H applies because it makes it an offence to invite another to provide money or other property when intending, or having reasonable cause to suspect, that it may be used for terrorism or by a terrorist or organization concerned in terrorism.",
+      "sample_id": 1
+    },
+    {
+      "question": "If someone uses money or other property for terrorism, which section applies?",
+      "reference": "Section 11I applies because it makes it an offence to use money or other property for the purposes of terrorism, or to possess it with the intention or reasonable cause to suspect that it may be used for terrorism.",
+      "sample_id": 2
+    },
+    {
+      "question": "If someone enters into an arrangement making money available and has reason to suspect it may be used for terrorism, which section applies?",
+      "reference": "Section 11J applies because it makes it an offence to enter into or become concerned in an arrangement that makes money or other property available when there is reasonable cause to suspect that it may be used for terrorism.",
+      "sample_id": 3
+    },
+    {
+      "question": "If someone conceals terrorist property by transfer to nominees, which section applies?",
+      "reference": "Section 11K applies because it makes it an offence to become concerned in an arrangement that facilitates the retention or control of terrorist property by concealment, removal from the jurisdiction, transfer to nominees, or any other way.",
+      "sample_id": 4
+    },
+    {
+      "question": "If a person learns in the course of business that another person may have committed an offence under the Act and does not disclose it, which section applies?",
+      "reference": "Section 11L applies because it requires disclosure to a police officer as soon as reasonably practicable when a belief or suspicion is formed in the course of trade, profession, business, or employment.",
+      "sample_id": 5
+    }
+  ]
+}

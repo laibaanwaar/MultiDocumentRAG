@@ -1,0 +1,5 @@
+{"faithfulness": 1.0, "sample_id": 1, "question": "What does terrorist property mean under Section 2?"}
+{"faithfulness": 0.25, "sample_id": 2, "question": "What does terrorism mean under Section 6?"}
+{"faithfulness": 0.6363636363636364, "sample_id": 3, "question": "What is the punishment under Section 7 when an act of terrorism causes death?"}
+{"faithfulness": 1.0, "sample_id": 4, "question": "What is the punishment under Section 7 when the act is likely to cause death or endangers life but no death or hurt is caused?"}
+{"faithfulness": 1.0, "sample_id": 5, "question": "What is the punishment for contravening Section 8?"}

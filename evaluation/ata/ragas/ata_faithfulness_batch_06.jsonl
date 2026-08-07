@@ -1,0 +1,5 @@
+{"faithfulness": 1.0, "sample_id": 1, "question": "How do Sections 11B and 11D differ?"}
+{"faithfulness": 0.25, "sample_id": 2, "question": "How do Sections 11EE and 11EEE differ?"}
+{"faithfulness": 1.0, "sample_id": 4, "question": "Which section covers prevntive detention for inquiry?"}
+{"faithfulness": 0.75, "sample_id": 3, "question": "Which section creates the Proscription reviw committee?"}
+{"faithfulness": 1.0, "sample_id": 5, "question": "Invalid test: Is there a Section 999 in the Anti-Terrorism Act, 1997?"}

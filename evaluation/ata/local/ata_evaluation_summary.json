@@ -1,0 +1,19 @@
+{
+  "sample_count": 30,
+  "metrics": {
+    "document_accuracy": 0.9,
+    "retrieval_hit_at_5": 0.7,
+    "provision_accuracy": 0.7,
+    "citation_presence": 1.0,
+    "answer_reference_cosine_similarity": 0.7233702033758164,
+    "invalid_provision_rejection_accuracy": 0.0,
+    "context_precision_local": 0.4277777777777778,
+    "context_recall_local": 0.7
+  },
+  "counts": {
+    "samples_with_predictions": 30,
+    "invalid_provision_samples": 1,
+    "nonexistent_provision_samples": 0
+  },
+  "hit_k": 5
+}

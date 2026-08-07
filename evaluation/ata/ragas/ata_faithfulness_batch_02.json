@@ -1,0 +1,63 @@
+{
+  "summary": "Per-sample RAGAS evaluation completed.",
+  "metrics": [
+    [
+      "faithfulness",
+      0.759090909090909
+    ]
+  ],
+  "row_scores": [
+    {
+      "faithfulness": 1.0,
+      "sample_id": 1,
+      "question": "What does Section 11EE cover?"
+    },
+    {
+      "faithfulness": 0.25,
+      "sample_id": 2,
+      "question": "What does Section 19 cover?"
+    },
+    {
+      "faithfulness": 0.5454545454545454,
+      "sample_id": 3,
+      "question": "What does freeze mean under Section 2?"
+    },
+    {
+      "faithfulness": 1.0,
+      "sample_id": 4,
+      "question": "What does proscribed organization mean under Section 2?"
+    },
+    {
+      "faithfulness": 1.0,
+      "sample_id": 5,
+      "question": "What does proscribed person mean under Section 2?"
+    }
+  ],
+  "rows": [
+    {
+      "question": "What does Section 11EE cover?",
+      "reference": "Section 11EE covers the proscription of a person and the powers that may follow once a person is listed in the Fourth Schedule.",
+      "sample_id": 1
+    },
+    {
+      "question": "What does Section 19 cover?",
+      "reference": "Section 19 covers the procedure and powers of the Anti-terrorism Court.",
+      "sample_id": 2
+    },
+    {
+      "question": "What does freeze mean under Section 2?",
+      "reference": "Section 2 defines freeze as prohibiting the transfer, conversion, disposition, or movement of any money or other property.",
+      "sample_id": 3
+    },
+    {
+      "question": "What does proscribed organization mean under Section 2?",
+      "reference": "Section 2 defines a proscribed organization as any organization listed in the First Schedule under section 11B.",
+      "sample_id": 4
+    },
+    {
+      "question": "What does proscribed person mean under Section 2?",
+      "reference": "Section 2 defines a proscribed person as any individual listed in the Fourth Schedule under section 11EE.",
+      "sample_id": 5
+    }
+  ]
+}
