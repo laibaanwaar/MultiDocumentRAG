@@ -30,4 +30,16 @@ urlpatterns = [
         "api/v1/billing/",
         include("billing.urls"),
     ),
+    path(
+        "api/v1/admin/",
+        include("config.admin_urls"),
+    ),
+    path(
+        "api/v1/rag/",
+        include("rag_api.urls"),
+    ),
+    path(
+        "api/v1/",
+        include("documents.urls"),
+    ),
 ]

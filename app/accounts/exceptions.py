@@ -191,6 +191,60 @@ class TokenInvalidError(APIException):
         )
 
 
+class LogoutRefreshTokenRequiredError(APIException):
+    status_code = status.HTTP_400_BAD_REQUEST
+    default_code = "refresh_token_required"
+
+    def __init__(self):
+        super().__init__(
+            detail={
+                "code": "REFRESH_TOKEN_REQUIRED",
+                "message": "The refresh token is required.",
+            }
+        )
+
+
+class LogoutInvalidRefreshTokenError(APIException):
+    status_code = status.HTTP_400_BAD_REQUEST
+    default_code = "invalid_refresh_token"
+
+    def __init__(self, *, message: str = "The refresh token is invalid."):
+        super().__init__(
+            detail={
+                "code": "INVALID_REFRESH_TOKEN",
+                "message": message,
+            }
+        )
+
+
+class LogoutRefreshTokenExpiredError(APIException):
+    status_code = status.HTTP_401_UNAUTHORIZED
+    default_code = "refresh_token_expired"
+
+    def __init__(self):
+        super().__init__(
+            detail={
+                "code": "INVALID_REFRESH_TOKEN",
+                "message": "The refresh token is invalid or expired.",
+            }
+        )
+
+
+class LogoutTokenUserMismatchError(APIException):
+    status_code = status.HTTP_403_FORBIDDEN
+    default_code = "token_user_mismatch"
+
+    def __init__(self):
+        super().__init__(
+            detail={
+                "code": "TOKEN_USER_MISMATCH",
+                "message": (
+                    "The refresh token does not belong to the authenticated user."
+                ),
+            }
+        )
+
+
 class AccountInactiveError(APIException):
     status_code = status.HTTP_403_FORBIDDEN
     default_code = "account_inactive"
@@ -200,5 +254,18 @@ class AccountInactiveError(APIException):
             detail={
                 "code": "ACCOUNT_INACTIVE",
                 "message": "This account is inactive.",
+            }
+        )
+
+
+class AdminUserNotFoundError(APIException):
+    status_code = status.HTTP_404_NOT_FOUND
+    default_code = "admin_user_not_found"
+
+    def __init__(self):
+        super().__init__(
+            detail={
+                "code": "USER_NOT_FOUND",
+                "message": "The user was not found.",
             }
         )

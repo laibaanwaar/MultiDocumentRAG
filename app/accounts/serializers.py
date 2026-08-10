@@ -210,3 +210,20 @@ class RefreshTokenSerializer(StrictInputSerializer):
             )
 
         return value
+
+
+class LogoutSerializer(StrictInputSerializer):
+    refresh = serializers.CharField(
+        write_only=True,
+        trim_whitespace=False,
+    )
+
+    def validate_refresh(self, value: str) -> str:
+        normalized = value.strip()
+
+        if not normalized:
+            raise serializers.ValidationError(
+                "Refresh token is required."
+            )
+
+        return normalized

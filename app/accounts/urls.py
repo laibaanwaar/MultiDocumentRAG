@@ -3,6 +3,7 @@ from django.urls import path
 from accounts.controllers.auth_controller import (
     LoginController,
     MeController,
+    LogoutController,
     RefreshTokenController,
     SignupController,
     ResendOTPController,
@@ -23,6 +24,11 @@ urlpatterns = [
         "refresh/",
         RefreshTokenController.as_view(),
         name="refresh",
+    ),
+    path(
+        "logout/",
+        LogoutController.as_view(),
+        name="logout",
     ),
     path(
         "me/",

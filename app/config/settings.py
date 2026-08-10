@@ -45,11 +45,14 @@ INSTALLED_APPS = [
     'api',
     'accounts',
     'billing.apps.BillingConfig',
+    'documents.apps.DocumentsConfig',
+    'rag_api.apps.RagApiConfig',
 ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'config.cors.DevCorsMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -146,6 +149,15 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
+LEGAL_DOCUMENTS_DIR = BASE_DIR.parent / "data" / "documents"
+MEDIA_ROOT = LEGAL_DOCUMENTS_DIR
+MEDIA_URL = "/media/"
+LEGAL_DOCUMENT_UPLOAD_MAX_SIZE = 20 * 1024 * 1024
+LEGAL_DOCUMENT_ARCHIVE_SUBDIR = "archived"
+RAG_QUERY_MAX_LENGTH = int(
+    os.getenv("RAG_QUERY_MAX_LENGTH", "4000")
+)
+
 
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.gmail.com")
@@ -182,6 +194,8 @@ REST_FRAMEWORK = {
         "auth_verify_email": "20/hour",
         "billing_plans": "60/hour",
         "billing_subscription": "60/hour",
+        "billing_admin_plans": "30/hour",
+        "billing_admin_subscriptions": "30/hour",
     },
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",

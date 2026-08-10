@@ -603,6 +603,341 @@ class MeAPITests(APITestCase):
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.data["code"], "TOKEN_INVALID")
 
+
+class LogoutAPITests(APITestCase):
+    def _create_user(
+        self,
+        *,
+        username="logoutuser",
+        email="logoutuser@example.com",
+        password="StrongPass!234",
+        is_active=True,
+        is_staff=False,
+        is_superuser=False,
+    ):
+        return User.objects.create_user(
+            username=username,
+            email=email,
+            password=password,
+            first_name="Logout",
+            last_name="User",
+            is_active=is_active,
+            is_staff=is_staff,
+            is_superuser=is_superuser,
+        )
+
+    def _login(self, user):
+        response = self.client.post(
+            "/api/v1/auth/login/",
+            {
+                "identifier": user.username,
+                "password": "StrongPass!234",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        return response.data["data"]["access"], response.data["data"]["refresh"]
+
+    def _auth_headers(self, access_token: str):
+        return {
+            "HTTP_AUTHORIZATION": f"Bearer {access_token}",
+        }
+
+    def test_normal_user_logout_success(self):
+        user = self._create_user()
+        access, refresh = self._login(user)
+
+        response = self.client.post(
+            "/api/v1/auth/logout/",
+            {"refresh": refresh},
+            format="json",
+            **self._auth_headers(access),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["message"], "Logged out successfully.")
+
+        refresh_response = self.client.post(
+            "/api/v1/auth/refresh/",
+            {"refresh": refresh},
+            format="json",
+        )
+
+        self.assertEqual(refresh_response.status_code, 401)
+        self.assertEqual(refresh_response.data["code"], "TOKEN_INVALID")
+
+    def test_admin_logout_success(self):
+        user = self._create_user(
+            username="adminlogout",
+            email="adminlogout@example.com",
+            is_staff=True,
+            is_superuser=True,
+        )
+        access, refresh = self._login(user)
+
+        response = self.client.post(
+            "/api/v1/auth/logout/",
+            {"refresh": refresh},
+            format="json",
+            **self._auth_headers(access),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["message"], "Logged out successfully.")
+
+    def test_logout_requires_access_token(self):
+        response = self.client.post(
+            "/api/v1/auth/logout/",
+            {"refresh": "dummy"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.data["code"], "AUTHENTICATION_REQUIRED")
+
+    def test_logout_rejects_invalid_access_token(self):
+        user = self._create_user(username="invalidaccess")
+        _, refresh = self._login(user)
+
+        response = self.client.post(
+            "/api/v1/auth/logout/",
+            {"refresh": refresh},
+            format="json",
+            HTTP_AUTHORIZATION="Bearer not-a-jwt",
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.data["code"], "AUTHENTICATION_REQUIRED")
+
+    def test_logout_rejects_expired_access_token(self):
+        user = self._create_user(username="expiredaccess")
+        _, refresh = self._login(user)
+        access = AccessToken.for_user(user)
+        access.set_exp(
+            from_time=timezone.now() - timedelta(hours=2),
+            lifetime=timedelta(hours=1),
+        )
+
+        response = self.client.post(
+            "/api/v1/auth/logout/",
+            {"refresh": refresh},
+            format="json",
+            **self._auth_headers(str(access)),
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.data["code"], "AUTHENTICATION_REQUIRED")
+
+    def test_logout_requires_refresh_field(self):
+        user = self._create_user(username="missingrefresh")
+        access, _ = self._login(user)
+
+        response = self.client.post(
+            "/api/v1/auth/logout/",
+            {},
+            format="json",
+            **self._auth_headers(access),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "REFRESH_TOKEN_REQUIRED")
+
+    def test_logout_rejects_blank_refresh_token(self):
+        user = self._create_user(username="blankrefresh")
+        access, _ = self._login(user)
+
+        response = self.client.post(
+            "/api/v1/auth/logout/",
+            {"refresh": "   "},
+            format="json",
+            **self._auth_headers(access),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "REFRESH_TOKEN_REQUIRED")
+
+    def test_logout_rejects_malformed_refresh_token(self):
+        user = self._create_user(username="malformedrefresh")
+        access, _ = self._login(user)
+
+        response = self.client.post(
+            "/api/v1/auth/logout/",
+            {"refresh": "not-a-jwt"},
+            format="json",
+            **self._auth_headers(access),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "INVALID_REFRESH_TOKEN")
+
+    def test_logout_rejects_access_token_as_refresh(self):
+        user = self._create_user(username="wrongtype")
+        access, refresh = self._login(user)
+
+        response = self.client.post(
+            "/api/v1/auth/logout/",
+            {"refresh": access},
+            format="json",
+            **self._auth_headers(access),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "INVALID_REFRESH_TOKEN")
+
+    def test_logout_rejects_refresh_from_another_user(self):
+        user_one = self._create_user(username="ownerone", email="owner1@example.com")
+        user_two = self._create_user(username="ownertwo", email="owner2@example.com")
+        access_one, _ = self._login(user_one)
+        _, refresh_two = self._login(user_two)
+
+        response = self.client.post(
+            "/api/v1/auth/logout/",
+            {"refresh": refresh_two},
+            format="json",
+            **self._auth_headers(access_one),
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["code"], "TOKEN_USER_MISMATCH")
+
+    def test_logout_is_idempotent_for_already_blacklisted_token(self):
+        user = self._create_user(username="idempotent")
+        access, refresh = self._login(user)
+
+        first = self.client.post(
+            "/api/v1/auth/logout/",
+            {"refresh": refresh},
+            format="json",
+            **self._auth_headers(access),
+        )
+        self.assertEqual(first.status_code, 200)
+
+        second = self.client.post(
+            "/api/v1/auth/logout/",
+            {"refresh": refresh},
+            format="json",
+            **self._auth_headers(access),
+        )
+
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.data["message"], "Logged out successfully.")
+
+    def test_logout_rejects_expired_refresh_token(self):
+        user = self._create_user(username="expiredrefresh")
+        access, _ = self._login(user)
+        refresh = RefreshToken.for_user(user)
+        refresh.set_exp(
+            from_time=timezone.now() - timedelta(days=2),
+            lifetime=timedelta(days=1),
+        )
+
+        response = self.client.post(
+            "/api/v1/auth/logout/",
+            {"refresh": str(refresh)},
+            format="json",
+            **self._auth_headers(access),
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.data["code"], "INVALID_REFRESH_TOKEN")
+
+    def test_logout_one_session_does_not_invalidate_another_session(self):
+        user = self._create_user(username="multisession")
+        access_one, refresh_one = self._login(user)
+        access_two, refresh_two = self._login(user)
+
+        logout_response = self.client.post(
+            "/api/v1/auth/logout/",
+            {"refresh": refresh_one},
+            format="json",
+            **self._auth_headers(access_one),
+        )
+        self.assertEqual(logout_response.status_code, 200)
+
+        refresh_response = self.client.post(
+            "/api/v1/auth/refresh/",
+            {"refresh": refresh_two},
+            format="json",
+        )
+        self.assertEqual(refresh_response.status_code, 200)
+        self.assertTrue(refresh_response.data["data"]["access"])
+
+        blacklisted_response = self.client.post(
+            "/api/v1/auth/refresh/",
+            {"refresh": refresh_one},
+            format="json",
+        )
+        self.assertEqual(blacklisted_response.status_code, 401)
+        self.assertEqual(blacklisted_response.data["code"], "TOKEN_INVALID")
+
+    def test_blacklisted_refresh_token_cannot_be_used_at_refresh_endpoint(self):
+        user = self._create_user(username="blacklistedrefresh")
+        access, refresh = self._login(user)
+
+        logout_response = self.client.post(
+            "/api/v1/auth/logout/",
+            {"refresh": refresh},
+            format="json",
+            **self._auth_headers(access),
+        )
+        self.assertEqual(logout_response.status_code, 200)
+
+        refresh_response = self.client.post(
+            "/api/v1/auth/refresh/",
+            {"refresh": refresh},
+            format="json",
+        )
+
+        self.assertEqual(refresh_response.status_code, 401)
+        self.assertEqual(refresh_response.data["code"], "TOKEN_INVALID")
+
+    def test_fresh_login_still_works_after_logout(self):
+        user = self._create_user(username="freshafterlogout")
+        access, refresh = self._login(user)
+
+        logout_response = self.client.post(
+            "/api/v1/auth/logout/",
+            {"refresh": refresh},
+            format="json",
+            **self._auth_headers(access),
+        )
+        self.assertEqual(logout_response.status_code, 200)
+
+        relogin_response = self.client.post(
+            "/api/v1/auth/login/",
+            {
+                "identifier": user.username,
+                "password": "StrongPass!234",
+            },
+            format="json",
+        )
+
+        self.assertEqual(relogin_response.status_code, 200)
+        self.assertTrue(relogin_response.data["data"]["access"])
+        self.assertTrue(relogin_response.data["data"]["refresh"])
+
+    def test_fresh_login_still_works_with_expired_stale_access_header(self):
+        user = self._create_user(username="staleaccess")
+        stale_access = AccessToken.for_user(user)
+        stale_access.set_exp(
+            from_time=timezone.now() - timedelta(hours=2),
+            lifetime=timedelta(hours=1),
+        )
+
+        response = self.client.post(
+            "/api/v1/auth/login/",
+            {
+                "identifier": user.username,
+                "password": "StrongPass!234",
+            },
+            format="json",
+            HTTP_AUTHORIZATION=f"Bearer {str(stale_access)}",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["data"]["access"])
+
     def test_invalid_token_returns_401(self):
         response = self.client.get(
             "/api/v1/auth/me/",

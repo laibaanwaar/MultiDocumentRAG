@@ -300,3 +300,169 @@ python evaluate_ragas.py --input evaluation/ata/ata_eval_samples.jsonl --predict
 - Context compression
 - Query decomposition
 - Citation verification
+
+---
+
+## Backend Auth And Billing Flow
+
+This section summarizes the Django backend that is currently implemented in the repository.
+
+### API Surface
+
+- `POST /api/v1/auth/signup/`
+- `POST /api/v1/auth/resend-otp/`
+- `POST /api/v1/auth/verify-email/`
+- `POST /api/v1/auth/login/`
+- `POST /api/v1/auth/refresh/`
+- `GET /api/v1/auth/me/`
+- `GET /api/v1/billing/plans/`
+- `GET /api/v1/billing/subscription/`
+
+### Signup Flow
+
+1. The client submits `username`, `email`, `first_name`, `last_name`, `password`, and `password_confirm`.
+2. Unknown fields such as `is_staff`, `is_superuser`, `is_active`, or `role` are rejected.
+3. The backend normalizes the username and email to lowercase.
+4. The password must match confirmation and pass the password strength checks.
+5. A new user is created as inactive with `is_active=False`, `is_staff=False`, and `is_superuser=False`.
+6. A 6-digit email verification OTP is generated and stored only as a hash.
+7. The OTP is emailed to the user.
+8. The API returns a masked email and OTP expiry countdown.
+
+### Email Verification Flow
+
+1. The client submits `email` and `otp`.
+2. The backend checks whether the email belongs to an unverified account.
+3. The OTP is validated against recent OTP history.
+4. Expired, reused, or incorrect OTPs are rejected.
+5. Too many failed attempts trigger a lockout for the current OTP.
+6. When verification succeeds, the user account is activated.
+7. The backend automatically assigns the default Free plan.
+
+### Login Flow
+
+1. The client submits `identifier` and `password`.
+2. The identifier may be either a username or an email address.
+3. The backend looks up the user case-insensitively.
+4. The account must be active before login succeeds.
+5. If the password is correct, the backend returns:
+   - a JWT access token
+   - a JWT refresh token
+   - the user profile payload
+6. The returned role is derived from the database:
+   - `admin` if `is_staff=True` or `is_superuser=True`
+   - `user` otherwise
+
+### Refresh Flow
+
+1. The client submits a refresh token.
+2. The backend validates the token.
+3. If valid, a new access token is returned.
+
+### Profile Flow
+
+1. `GET /api/v1/auth/me/` requires a valid JWT access token.
+2. The backend rejects missing, expired, or invalid tokens.
+3. The backend rejects inactive users.
+4. The response returns the current user profile plus the derived role.
+
+### Billing Flow
+
+#### Plans
+
+1. `GET /api/v1/billing/plans/` is public.
+2. Only active plans are returned.
+3. The plan payload includes:
+   - `id`
+   - `name`
+   - `code`
+   - `price`
+   - `billing_period`
+   - `document_limit`
+   - `query_limit`
+   - `is_active`
+   - `created_at`
+   - `updated_at`
+
+#### Subscription
+
+1. `GET /api/v1/billing/subscription/` requires a valid JWT access token.
+2. The account must be active.
+3. The backend loads the current user subscription from PostgreSQL.
+4. The subscription is rejected if:
+   - the plan is inactive
+   - the subscription is canceled
+   - the subscription is expired
+5. The response returns the subscription plus `queries_remaining`.
+
+### Free Plan Logic
+
+1. A default plan with code `FREE` is seeded in the database.
+2. The Free plan is monthly, active, and set to:
+   - `document_limit = 3`
+   - `query_limit = 30`
+3. After email verification, the user receives this Free plan automatically.
+4. `queries_remaining` is computed from the plan limit minus `queries_used`.
+
+### User Access
+
+- Can register a new account.
+- Can request OTP resend.
+- Can verify email.
+- Can log in.
+- Can refresh access tokens.
+- Can view their own profile.
+- Can view available billing plans.
+- Can view their own subscription.
+
+### Admin Access
+
+- The backend currently does not expose dedicated admin API routes in this repository.
+- A user is treated as `admin` only when `is_staff=True` or `is_superuser=True`.
+- That admin role is used in returned payloads, but it is not yet backed by separate admin endpoints or custom admin permissions here.
+
+### Input Field Access
+
+#### Signup
+
+- Allowed: `username`, `email`, `first_name`, `last_name`, `password`, `password_confirm`
+- Rejected: `is_staff`, `is_superuser`, `is_active`, `role`, and any unknown field
+
+#### Login
+
+- Allowed: `identifier`, `password`
+- Rejected: everything else
+
+#### Resend OTP
+
+- Allowed: `email`
+
+#### Verify Email
+
+- Allowed: `email`, `otp`
+
+#### Refresh Token
+
+- Allowed: `refresh`
+
+### Implementation Note
+
+- The billing layer currently stores and exposes subscription data.
+- The repository does not yet show request-time enforcement of document or query limits inside the RAG pipeline.
+
+### Added Backend Modules
+
+- `billing` now includes staff-only admin plan and subscription APIs under `/api/v1/admin/billing/` and `/api/v1/admin/subscriptions/`.
+- `documents` now provides JWT-protected category create/list APIs under `/api/v1/document-categories/`.
+- Each new API follows the existing layered pattern: controller for HTTP and permissions, service for queryset/business logic, serializer for validation and response shaping.
+- Validation is strict: unknown fields are rejected, codes are normalized to uppercase, and duplicate plan/category data returns conflict errors instead of 500s.
+- The new document category model is migration-backed and ready for future `LegalDocument.category` usage without adding that relation yet.
+
+### Legal Document Admin APIs
+
+- `POST /api/v1/documents/` creates a PDF-only legal document with staff JWT auth.
+- `GET /api/v1/documents/` returns a paginated admin list with category, status, and search filters.
+- `GET /api/v1/documents/<id>/` returns full document metadata, including checksum and ingestion error details.
+- `PATCH /api/v1/documents/<id>/` allows only `title` and `category_id`; READY documents are re-queued to `PENDING` after a change.
+- `DELETE /api/v1/documents/<id>/` archives the document, moves its file under `data/documents/archived/`, and removes matching Qdrant points by `document_id` when available.
+- Upload validation is strict: PDF signature, MIME type, extension, size limit, and checksum duplication are all checked before save.

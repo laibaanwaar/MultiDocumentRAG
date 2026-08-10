@@ -14,10 +14,16 @@ from rest_framework_simplejwt.exceptions import InvalidToken
 
 from accounts.serializers import (
     LoginSerializer,
+    LogoutSerializer,
     ResendOTPSerializer,
     RefreshTokenSerializer,
     SignupSerializer,
     VerifyEmailSerializer,
+)
+from accounts.exceptions import (
+    LogoutInvalidRefreshTokenError,
+    LogoutRefreshTokenExpiredError,
+    LogoutTokenUserMismatchError,
 )
 from accounts.services.refresh_service import (
     refresh_access_token,
@@ -25,6 +31,9 @@ from accounts.services.refresh_service import (
 from accounts.services.login_service import (
     authenticate_login,
     build_login_user_payload,
+)
+from accounts.services.logout_service import (
+    logout_refresh_token,
 )
 from accounts.services.profile_service import (
     get_user_profile,
@@ -398,6 +407,112 @@ class RefreshTokenController(APIView):
                 "data": {
                     "access": result.access,
                 },
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class LogoutController(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def handle_exception(self, exc):
+        if isinstance(exc, NotAuthenticated):
+            return _auth_error_response(
+                code="AUTHENTICATION_REQUIRED",
+                message="Authentication credentials were not provided.",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        if isinstance(exc, (AuthenticationFailed, InvalidToken)):
+            return _auth_error_response(
+                code="AUTHENTICATION_REQUIRED",
+                message="Authentication credentials are invalid or expired.",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        return super().handle_exception(exc)
+
+    def post(self, request):
+        serializer = LogoutSerializer(data=request.data)
+
+        if not serializer.is_valid():
+            errors = serializer.errors
+
+            if set(errors.keys()) == {"refresh"}:
+                return Response(
+                    {
+                        "code": "REFRESH_TOKEN_REQUIRED",
+                        "message": "The refresh token is required.",
+                        "errors": errors,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            return Response(
+                {
+                    "code": "INVALID_REFRESH_TOKEN",
+                    "message": "The refresh token is invalid.",
+                    "errors": errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            logout_refresh_token(
+                user=request.user,
+                refresh_token=serializer.validated_data["refresh"],
+            )
+        except LogoutTokenUserMismatchError:
+            return Response(
+                {
+                    "code": "TOKEN_USER_MISMATCH",
+                    "message": (
+                        "The refresh token does not belong to the authenticated user."
+                    ),
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        except LogoutRefreshTokenExpiredError:
+            return Response(
+                {
+                    "code": "INVALID_REFRESH_TOKEN",
+                    "message": "The refresh token is invalid or expired.",
+                },
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        except LogoutInvalidRefreshTokenError:
+            return Response(
+                {
+                    "code": "INVALID_REFRESH_TOKEN",
+                    "message": "The refresh token is invalid.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except DatabaseError:
+            logger.warning("Database error during logout.")
+            return Response(
+                {
+                    "code": "INTERNAL_ERROR",
+                    "message": "The logout could not be completed right now.",
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        except APIException:
+            raise
+        except Exception:
+            logger.exception("Unexpected logout failure.")
+            return Response(
+                {
+                    "code": "INTERNAL_ERROR",
+                    "message": "The logout could not be completed because of an unexpected error.",
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {
+                "message": "Logged out successfully.",
             },
             status=status.HTTP_200_OK,
         )

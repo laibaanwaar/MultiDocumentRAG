@@ -1,0 +1,95 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #08111c;
+  color: #fff;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.hero-title {
+  perspective: 1000px;
+}
+
+.hero-line {
+  opacity: 0;
+  transform: translateY(14px);
+  animation: heroFadeUp 700ms ease forwards;
+}
+
+.hero-line-delay-1 {
+  animation-delay: 120ms;
+}
+
+.hero-line-delay-2 {
+  animation-delay: 240ms;
+}
+
+@keyframes heroFadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+    filter: blur(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+.hero-chat-shell {
+  animation: chatFloat 5.5s ease-in-out infinite;
+  transform-origin: center;
+}
+
+.hero-chat-shell > div {
+  animation: chatGlow 5.5s ease-in-out infinite;
+}
+
+@keyframes chatFloat {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    transform: translateY(-6px) scale(1.01);
+  }
+}
+
+@keyframes chatGlow {
+  0%,
+  100% {
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+  }
+  50% {
+    box-shadow: 0 26px 72px rgba(0, 0, 0, 0.55);
+  }
+}
+
+.signup-card {
+  animation: signupReveal 520ms ease both;
+}
+
+@keyframes signupReveal {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.985);
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}

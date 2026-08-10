@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from rag.schemas import QueryPlan
 from rag.answer_service import (
     answer_question as run_answer_service,
     create_rag_components,
@@ -14,10 +15,11 @@ def answer_question(
     retriever: Any,
     chat_model: Any,
     top_k: int = 5,
+    plan: QueryPlan | None = None,
 ) -> dict[str, Any]:
     """Route a question and pass it to the answer service."""
 
-    plan = route_question(question)
+    plan = plan or route_question(question)
 
     return run_answer_service(
         question=question,

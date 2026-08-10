@@ -202,7 +202,14 @@ def find_pdf_files() -> list[Path]:
         )
 
     pdf_files = sorted(
-        DOCUMENTS_DIR.rglob("*.pdf"),
+        (
+            path
+            for path in DOCUMENTS_DIR.rglob("*.pdf")
+            if "archived" not in {
+                part.lower()
+                for part in path.parts
+            }
+        ),
         key=lambda path: str(path).lower(),
     )
 
