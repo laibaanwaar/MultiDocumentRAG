@@ -195,7 +195,7 @@ REST_FRAMEWORK = {
         "billing_plans": "60/hour",
         "billing_subscription": "60/hour",
         "billing_admin_plans": "30/hour",
-        "billing_admin_subscriptions": "30/hour",
+        "billing_admin_subscriptions": "300/min",
     },
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",

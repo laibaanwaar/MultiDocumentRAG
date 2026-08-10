@@ -32,7 +32,7 @@ export default function Login() {
   function handleLoginSuccess(response) {
     storeAuthSession(response?.data);
     setSuccessMessage(response?.message || 'Login successful.');
-    navigate('/chatbot', { replace: true });
+    navigate(response?.data?.user?.role === 'admin' ? '/admin/dashboard' : '/chatbot', { replace: true });
   }
 
   function handleChange(event) {

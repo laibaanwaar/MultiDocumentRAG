@@ -12,23 +12,28 @@ const stats = [
 const featureCards = [
   {
     title: 'Multi-Document AI Search',
-    description: 'Search across multiple legal documents simultaneously and get precise, relevant answers.'
+    description: 'Search across multiple legal documents simultaneously and get precise, relevant answers.',
+    icon: 'DOC'
   },
   {
     title: 'Laws of Pakistan',
-    description: 'Built specifically for Pakistani legal system with updated acts, codes and regulations.'
+    description: 'Built specifically for Pakistani legal system with updated acts, codes and regulations.',
+    icon: 'SHIELD'
   },
   {
     title: 'AI-Powered Accuracy',
-    description: 'Advanced AI understands context and provides accurate, reliable legal information.'
+    description: 'Advanced AI understands context and provides accurate, reliable legal information.',
+    icon: 'CHAT'
   },
   {
     title: 'Secure & Confidential',
-    description: 'Your queries and documents are encrypted and kept completely secure.'
+    description: 'Your queries and documents are encrypted and kept completely secure.',
+    icon: 'LOCK'
   },
   {
     title: 'Chat History',
-    description: 'Save, organize and revisit your conversations and legal research anytime.'
+    description: 'Save, organize and revisit your conversations and legal research anytime.',
+    icon: 'CLOCK'
   }
 ];
 
@@ -48,15 +53,75 @@ function StatItem({ icon, value, label }) {
   );
 }
 
-function FeatureCard({ title, description }) {
+function FeatureIcon({ icon }) {
+  if (icon === 'DOC') {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className="h-5 w-5">
+        <path d="M8 3.5h6l4 4V19a1.5 1.5 0 0 1-1.5 1.5h-8A1.5 1.5 0 0 1 7 19V5A1.5 1.5 0 0 1 8.5 3.5Z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+        <path d="M14 3.5V8h4" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+        <path d="M9.5 11.5h5M9.5 15h5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+      </svg>
+    );
+  }
+
+  if (icon === 'SHIELD') {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className="h-5 w-5">
+        <path d="M12 3.5c2.3 1.8 4.7 2.8 7 3v4.4c0 4.2-2.8 7.8-7 9.6-4.2-1.8-7-5.4-7-9.6V6.5c2.3-.2 4.7-1.2 7-3Z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+        <path d="m9.5 12.5 1.7 1.7 3.3-3.7" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+
+  if (icon === 'CHAT') {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className="h-5 w-5">
+        <path d="M20 11.5A7.5 7.5 0 0 1 12.5 19H8l-4 2 .9-3.7A7.5 7.5 0 1 1 20 11.5Z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+        <path d="M9.2 11.5h.01M12 11.5h.01M14.8 11.5h.01" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+      </svg>
+    );
+  }
+
+  if (icon === 'LOCK') {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className="h-5 w-5">
+        <rect x="6.5" y="10.5" width="11" height="9" rx="1.7" stroke="currentColor" strokeWidth="1.7" />
+        <path d="M9 10.5V8.5a3 3 0 1 1 6 0v2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+      </svg>
+    );
+  }
+
   return (
-    <article className="flex min-h-[188px] flex-col items-center rounded-[16px] border border-slate-200 bg-white px-4 py-5 text-center shadow-[0_8px_18px_rgba(15,23,42,0.04)]">
-      <div className="mx-auto mb-4 flex h-10 w-10 items-center justify-center rounded-full bg-amber-50 text-[11px] font-semibold text-amber-700 shadow-inner">
-        i
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className="h-5 w-5">
+      <path d="M4 12a8 8 0 1 0 2.3-5.7" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M4 5v4h4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M12 8v4l2.8 1.8" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function FeatureCard({ title, description, icon }) {
+  return (
+    <article className="rounded-[16px] border border-slate-200 bg-white px-5 py-5 text-center shadow-[0_10px_22px_rgba(15,23,42,0.05)]">
+      <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-amber-50 text-amber-700 shadow-inner">
+        <FeatureIcon icon={icon} />
       </div>
-      <div className="mx-auto max-w-[186px]">
-        <h3 className="text-[12px] font-semibold leading-5 text-slate-900">{title}</h3>
-        <p className="mt-2 text-[11px] leading-5 text-slate-600">{description}</p>
+      <div
+        className="mx-auto mt-5 block max-w-[200px]"
+        style={{ visibility: 'visible', opacity: 1, color: '#0f172a' }}
+      >
+        <h3
+          className="block text-[14px] font-semibold leading-5"
+          style={{ display: 'block', visibility: 'visible', opacity: 1, color: '#111827' }}
+        >
+          {title}
+        </h3>
+        <p
+          className="mt-2 block text-[12px] leading-5"
+          style={{ display: 'block', visibility: 'visible', opacity: 1, color: '#475569' }}
+        >
+          {description}
+        </p>
       </div>
     </article>
   );
@@ -190,7 +255,7 @@ export default function Home() {
         </section>
 
         <section id="features" className="border-t border-slate-200 bg-[#f8f3ea] px-4 py-5 sm:px-6 lg:px-10 lg:py-6">
-          <div className="mx-auto grid max-w-[1500px] gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <div className="mx-auto grid max-w-[1500px] items-stretch gap-3 md:grid-cols-2 xl:grid-cols-5">
             {featureCards.map((card) => (
               <FeatureCard key={card.title} {...card} />
             ))}

@@ -17,6 +17,16 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+::selection {
+  background: #111827;
+  color: #f8fafc;
+}
+
+::-moz-selection {
+  background: #111827;
+  color: #f8fafc;
+}
+
 .hero-title {
   perspective: 1000px;
 }

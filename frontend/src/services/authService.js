@@ -71,7 +71,8 @@ function normalizeMessages(value) {
   return [String(value)];
 }
 
-export function parseAuthApiError(error, fieldMap = {}) {
+export function parseAuthApiError(error, fieldMap = {}, options = {}) {
+  const throttleMessage = options.throttleMessage || 'Too many requests. Please wait a moment and try again.';
   const fieldErrors = Object.fromEntries(
     Object.values(fieldMap).map((field) => [field, ''])
   );
@@ -110,8 +111,8 @@ export function parseAuthApiError(error, fieldMap = {}) {
     });
   }
 
-  if (status === 429 && !data?.message) {
-    message = 'Too many signup attempts. Please try again later.';
+  if (status === 429) {
+    message = data?.message || throttleMessage;
   }
 
   if (status >= 500) {
@@ -122,7 +123,7 @@ export function parseAuthApiError(error, fieldMap = {}) {
     fieldErrors,
     message,
     code: data?.code || '',
-    retryAfterSeconds: Number(data?.retry_after_seconds || 0),
+    retryAfterSeconds: Number(data?.retry_after_seconds || error.response.headers?.['retry-after'] || 0),
     status
   };
 }
