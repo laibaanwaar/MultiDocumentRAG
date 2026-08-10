@@ -225,12 +225,29 @@ def extract_section_numbers(
 ) -> list[str]:
     """Extract all explicit Section references."""
 
-    matches = re.findall(
-        r"\b(?:section|sec\.?|s\.)\s*"
-        r"(\d+(?:-[A-Za-z]+)?[A-Za-z]?)\b",
+    provision_pattern = (
+        r"\d+(?:[A-Za-z]+|-[A-Za-z]+)?"
+    )
+    grouped_pattern = (
+        r"\b(?:section|sections|sec\.?|secs\.?|s\.)\s*"
+        rf"(({provision_pattern})(?:\s*(?:,|and|or)\s*"
+        rf"{provision_pattern})*)\b"
+    )
+    grouped_matches = re.findall(
+        grouped_pattern,
         question,
         flags=re.IGNORECASE,
     )
+    matches: list[str] = []
+
+    for grouped_match, _first_match in grouped_matches:
+        matches.extend(
+            re.findall(
+                provision_pattern,
+                grouped_match,
+                flags=re.IGNORECASE,
+            )
+        )
 
     return deduplicate_strings(
         [
@@ -245,12 +262,29 @@ def extract_article_numbers(
 ) -> list[str]:
     """Extract all explicit Article references."""
 
-    matches = re.findall(
-        r"\b(?:article|art\.?)\s*"
-        r"(\d+(?:-[A-Za-z]+)?[A-Za-z]?)\b",
+    provision_pattern = (
+        r"\d+(?:[A-Za-z]+|-[A-Za-z]+)?"
+    )
+    grouped_pattern = (
+        r"\b(?:article|articles|art\.?)\s*"
+        rf"(({provision_pattern})(?:\s*(?:,|and|or)\s*"
+        rf"{provision_pattern})*)\b"
+    )
+    grouped_matches = re.findall(
+        grouped_pattern,
         question,
         flags=re.IGNORECASE,
     )
+    matches: list[str] = []
+
+    for grouped_match, _first_match in grouped_matches:
+        matches.extend(
+            re.findall(
+                provision_pattern,
+                grouped_match,
+                flags=re.IGNORECASE,
+            )
+        )
 
     return deduplicate_strings(
         [

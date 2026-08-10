@@ -15,11 +15,7 @@ from rag.schemas import CandidateDocument
 
 
 METADATA_PREFIX = "metadata"
-
-
-# -------------------------------------------------------------------
-# Metadata normalization
-# -------------------------------------------------------------------
+EXACT_PROVISION_SCROLL_LIMIT = 128
 
 def normalize_provision_number(
     value: str | int | None,
@@ -173,9 +169,94 @@ def get_document_identity(
     )
 
 
-# -------------------------------------------------------------------
-# Qdrant filter builders
-# -------------------------------------------------------------------
+def _safe_int(
+    value: Any,
+    default: int = 0,
+) -> int:
+    """Return a safe integer for source-order sorting."""
+
+    try:
+        return int(value)
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return default
+
+
+def get_document_order_key(
+    document: Document,
+) -> tuple[Any, ...]:
+    """Return a stable source-order key for exact provision chunks."""
+
+    metadata = document.metadata
+
+    preferred_order = metadata.get(
+        "document_chunk_number"
+    )
+    fallback_chunk_order = metadata.get(
+        "chunk_number"
+    )
+    fallback_page = metadata.get(
+        "page_start",
+        metadata.get(
+            "page_number",
+            0,
+        ),
+    )
+
+    return (
+        _safe_int(
+            preferred_order,
+            default=_safe_int(
+                fallback_chunk_order,
+                default=_safe_int(
+                    fallback_page,
+                    default=0,
+                ),
+            ),
+        ),
+        _safe_int(
+            metadata.get(
+                "provision_part_number",
+                metadata.get(
+                    "section_part_number",
+                    1,
+                ),
+            ),
+            default=1,
+        ),
+        _safe_int(
+            fallback_chunk_order,
+            default=0,
+        ),
+        _safe_int(
+            metadata.get(
+                "page_start",
+                metadata.get(
+                    "page_number",
+                    0,
+                ),
+            ),
+            default=0,
+        ),
+        _safe_int(
+            metadata.get(
+                "page_end",
+                metadata.get(
+                    "page_number",
+                    0,
+                ),
+            ),
+            default=0,
+        ),
+        str(
+            metadata.get(
+                "chunk_id",
+                "",
+            )
+        ),
+    )
 
 def build_document_filter(
     document_ids: list[str],
@@ -509,12 +590,6 @@ def build_articles_filter(
             ),
         ]
     )
-
-
-# -------------------------------------------------------------------
-# Document validation
-# -------------------------------------------------------------------
-
 def is_usable_document(
     document: Document,
 ) -> bool:
@@ -597,11 +672,6 @@ def document_matches_route(
 
     return True
 
-
-# -------------------------------------------------------------------
-# Neighbor provision helpers
-# -------------------------------------------------------------------
-
 def parse_numeric_provision(
     provision_number: str,
 ) -> int | None:
@@ -678,11 +748,6 @@ def build_neighbor_section_numbers(
         radius=radius,
     )
 
-
-# -------------------------------------------------------------------
-# Vector-store wrapper
-# -------------------------------------------------------------------
-
 class AdaptiveRetriever:
     """Thin retrieval wrapper around QdrantVectorStore."""
 
@@ -757,10 +822,124 @@ class AdaptiveRetriever:
                 for document in documents
             ]
 
+    def _document_from_qdrant_point(
+        self,
+        point: Any,
+    ) -> Document:
+        """Convert one Qdrant point into the LangChain Document shape."""
 
-# -------------------------------------------------------------------
-# Exact and neighbor retrieval
-# -------------------------------------------------------------------
+        payload = getattr(
+            point,
+            "payload",
+            {},
+        ) or {}
+
+        content_payload_key = getattr(
+            self.vector_store,
+            "content_payload_key",
+            "page_content",
+        )
+        metadata_payload_key = getattr(
+            self.vector_store,
+            "metadata_payload_key",
+            "metadata",
+        )
+
+        metadata = dict(
+            payload.get(
+                metadata_payload_key,
+                {},
+            )
+            or {}
+        )
+        metadata["_id"] = getattr(
+            point,
+            "id",
+            None,
+        )
+        metadata["_collection_name"] = getattr(
+            self.vector_store,
+            "collection_name",
+            "",
+        )
+
+        return Document(
+            page_content=payload.get(
+                content_payload_key,
+                "",
+            ),
+            metadata=metadata,
+        )
+
+    def scroll_documents(
+        self,
+        metadata_filter: Filter,
+        page_size: int = EXACT_PROVISION_SCROLL_LIMIT,
+    ) -> list[Document]:
+        """Fetch all payload-matched documents from Qdrant with pagination."""
+
+        client = getattr(
+            self.vector_store,
+            "client",
+            None,
+        )
+        collection_name = getattr(
+            self.vector_store,
+            "collection_name",
+            "",
+        )
+
+        if client is None or not collection_name:
+            raise AttributeError(
+                "The vector store does not expose a Qdrant client and collection name."
+            )
+
+        documents: list[Document] = []
+        offset: Any = None
+
+        while True:
+            scroll_result = client.scroll(
+                collection_name=collection_name,
+                scroll_filter=metadata_filter,
+                limit=page_size,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+
+            if isinstance(
+                scroll_result,
+                tuple,
+            ):
+                points, next_offset = scroll_result
+            else:
+                points = getattr(
+                    scroll_result,
+                    "points",
+                    [],
+                )
+                next_offset = getattr(
+                    scroll_result,
+                    "next_page_offset",
+                    None,
+                )
+
+            if not points:
+                break
+
+            for point in points:
+                documents.append(
+                    self._document_from_qdrant_point(
+                        point
+                    )
+                )
+
+            if next_offset is None:
+                break
+
+            offset = next_offset
+
+        return documents
 
 def deduplicate_scored_documents(
     items: list[tuple[Document, float]],
@@ -795,6 +974,30 @@ def deduplicate_scored_documents(
         key=lambda item: item[1],
         reverse=True,
     )
+
+
+def deduplicate_documents_in_order(
+    documents: list[Document],
+) -> list[Document]:
+    """Keep the first copy of each chunk while preserving source order."""
+
+    ordered_documents: list[Document] = []
+    seen_identities: set[str] = set()
+
+    for document in documents:
+        identity = get_document_identity(
+            document
+        )
+
+        if identity in seen_identities:
+            continue
+
+        seen_identities.add(identity)
+        ordered_documents.append(
+            document
+        )
+
+    return ordered_documents
 
 
 def retrieve_exact_provision_documents(
@@ -858,43 +1061,80 @@ def retrieve_exact_provision_documents(
             )
         )
 
-    scored_results: list[
-        tuple[Document, float]
-    ] = []
+    exact_documents: list[Document] = []
 
     for metadata_filter in filters:
         try:
-            results = retriever.search_with_scores(
-                query=question,
-                k=max(
-                    top_k,
-                    len(normalized_numbers) * 4,
-                ),
-                metadata_filter=metadata_filter,
+            results = (
+                retriever.scroll_documents(
+                    metadata_filter=metadata_filter,
+                    page_size=(
+                        EXACT_PROVISION_SCROLL_LIMIT
+                    ),
+                )
             )
+        except AttributeError:
+            try:
+                scored_results = (
+                    retriever.search_with_scores(
+                        query=question,
+                        k=max(
+                            top_k,
+                            len(normalized_numbers)
+                            * 4,
+                        ),
+                        metadata_filter=metadata_filter,
+                    )
+                )
+                results = [
+                    document
+                    for document, _score
+                    in scored_results
+                ]
+            except Exception:
+                continue
         except Exception:
             continue
 
-        for document, score in results:
+        matching_documents = [
+            document
+            for document in results
             if (
-                is_usable_document(document)
+                is_usable_document(
+                    document
+                )
                 and document_matches_route(
                     document=document,
                     document_ids=document_ids,
                     provision_type=provision_type,
                     provision_numbers=normalized_numbers,
                 )
-            ):
-                scored_results.append(
-                    (
-                        document,
-                        score,
-                    )
-                )
+            )
+        ]
 
-    return deduplicate_scored_documents(
-        scored_results
+        if matching_documents:
+            exact_documents.extend(
+                matching_documents
+            )
+            break
+
+    if not exact_documents:
+        return []
+
+    ordered_documents = sorted(
+        deduplicate_documents_in_order(
+            exact_documents
+        ),
+        key=get_document_order_key,
     )
+
+    return [
+        (
+            document,
+            1.0,
+        )
+        for document in ordered_documents
+    ]
 
 
 def retrieve_neighbor_documents(
@@ -940,11 +1180,6 @@ def retrieve_neighbor_documents(
 
     except Exception:
         return []
-
-
-# -------------------------------------------------------------------
-# Candidate retrieval
-# -------------------------------------------------------------------
 
 def get_concept_preferred_sections(
     detected_concepts: list[str],
