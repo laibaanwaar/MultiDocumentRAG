@@ -12,6 +12,7 @@ from rag.intent_router import get_retrieval_k, route_question
 from rag.prompt_builder import build_grounded_prompt
 from rag.ranker import (
     calculate_retrieval_confidence,
+    deduplicate_ranked_documents,
     merge_provision_parts,
     rank_candidates,
     select_context_documents,
@@ -271,38 +272,46 @@ def answer_question(
             "article_number",
             None,
         ),
+        legal_references=getattr(
+            plan,
+            "legal_references",
+            [],
+        ),
+    )
+
+    ranked_items = rank_candidates(
+        question=plan.original_question,
+        detected_concepts=plan.concepts,
+        candidates=candidates,
+        semantic_threshold=(
+            SEMANTIC_DEDUP_THRESHOLD
+        ),
     )
 
     if exact_documents:
-        retrieved_documents = merge_provision_parts(
-            exact_documents
-        )[:MAX_CONTEXT_DOCUMENTS]
-
-        ranked_items = build_exact_ranked_items(
-            retrieved_documents
+        exact_ranked_items = build_exact_ranked_items(
+            merge_provision_parts(
+                exact_documents
+            )
         )
-
-    else:
-        ranked_items = rank_candidates(
-            question=plan.original_question,
-            detected_concepts=plan.concepts,
-            candidates=candidates,
+        ranked_items = deduplicate_ranked_documents(
+            exact_ranked_items + ranked_items,
             semantic_threshold=(
                 SEMANTIC_DEDUP_THRESHOLD
             ),
         )
 
-        retrieved_documents = select_context_documents(
-            ranked_items=ranked_items,
-            question_type=plan.question_type,
-            maximum_documents=(
-                MAX_CONTEXT_DOCUMENTS
-            ),
-            max_context_sections=(
-                MAX_CONTEXT_PROVISIONS
-            ),
-            final_k=get_final_k(plan.question_type),
-        )
+    retrieved_documents = select_context_documents(
+        ranked_items=ranked_items,
+        question_type=plan.question_type,
+        maximum_documents=(
+            MAX_CONTEXT_DOCUMENTS
+        ),
+        max_context_sections=(
+            MAX_CONTEXT_PROVISIONS
+        ),
+        final_k=get_final_k(plan.question_type),
+    )
 
     if not retrieved_documents:
         return empty_result(

@@ -23,6 +23,19 @@ def _deduplicate(values: list[str]) -> list[str]:
 
 
 @dataclass
+class LegalReference:
+    """
+    Canonical reference to a legal provision or one of its child parts.
+    """
+
+    provision_type: str
+    base_number: str
+    subsection_path: list[str] = field(default_factory=list)
+    component_type: str | None = None
+    original_citation: str = ""
+
+
+@dataclass
 class QueryPlan:
     """
     Describes how a user question should be retrieved.
@@ -50,6 +63,11 @@ class QueryPlan:
     # General field for both Sections and Articles
     provision_numbers: list[str] = field(default_factory=list)
     provision_type: str | None = None
+
+    # F-03: structured subsection/clause references
+    legal_references: list[LegalReference] = field(
+        default_factory=list
+    )
 
     def __post_init__(self) -> None:
         self.concepts = _deduplicate(self.concepts)

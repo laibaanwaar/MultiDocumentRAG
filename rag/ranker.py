@@ -918,7 +918,7 @@ def rank_candidates(
         RankedDocument,
     ] = {}
 
-    query_ranks: Counter[int] = (
+    query_ranks: Counter[tuple[str, int]] = (
         Counter()
     )
 
@@ -927,12 +927,22 @@ def rank_candidates(
             candidate.document
         )
 
+        retrieval_method = str(
+            candidate.retrieval_method
+            or "vector"
+        ).strip().lower() or "vector"
+
+        query_rank_key = (
+            retrieval_method,
+            candidate.query_index,
+        )
+
         query_ranks[
-            candidate.query_index
+            query_rank_key
         ] += 1
 
         candidate_rank = query_ranks[
-            candidate.query_index
+            query_rank_key
         ]
 
         if key not in fused_results:
@@ -946,6 +956,9 @@ def rank_candidates(
                         normalize_similarity_score(
                             candidate.relevance_score
                         )
+                        if retrieval_method
+                        == "vector"
+                        else 0.0
                     ),
                     matched_queries=0,
                 )
@@ -964,13 +977,15 @@ def rank_candidates(
             )
         )
         item.matched_queries += 1
-        item.relevance_score = max(
-            item.relevance_score
-            or 0.0,
-            normalize_similarity_score(
-                candidate.relevance_score
-            ),
-        )
+
+        if retrieval_method == "vector":
+            item.relevance_score = max(
+                item.relevance_score
+                or 0.0,
+                normalize_similarity_score(
+                    candidate.relevance_score
+                ),
+            )
 
     ranked_items = list(
         fused_results.values()

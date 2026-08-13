@@ -7,7 +7,10 @@ from rag.concept_registry import (
     LEGAL_CONCEPTS,
     SCENARIO_MARKERS,
 )
-from rag.schemas import QueryPlan
+from rag.legal_reference_normalizer import (
+    canonicalize_provision_number,
+)
+from rag.schemas import LegalReference, QueryPlan
 
 
 # -------------------------------------------------------------------
@@ -184,6 +187,91 @@ def deduplicate_strings(
     return unique_values
 
 
+_SECTION_PREFIX_PATTERN = (
+    r"(?:section|sections|sec\.?|secs\.?|s\.?)"
+)
+
+_ARTICLE_PREFIX_PATTERN = (
+    r"(?:article|articles|art\.?)"
+)
+
+_PROVISION_NUMBER_PATTERN = (
+    r"\d+(?:(?:\s*-\s*[A-Za-z]+)|[A-Za-z]+)?"
+    r"(?:\s*\(\s*[A-Za-z0-9]+\s*\))*"
+)
+
+
+def _extract_canonical_provision_numbers(
+    question: str,
+    prefix_pattern: str,
+) -> list[str]:
+    """Return deduplicated canonical provision numbers for one citation family."""
+
+    citation_pattern = re.compile(
+        rf"\b{prefix_pattern}\s*"
+        rf"(?P<group>{_PROVISION_NUMBER_PATTERN}"
+        rf"(?:\s*(?:,|and|or)\s*"
+        rf"{_PROVISION_NUMBER_PATTERN})*)",
+        flags=re.IGNORECASE,
+    )
+
+    numbers: list[str] = []
+
+    for match in citation_pattern.finditer(
+        question
+    ):
+        for number_match in re.finditer(
+            _PROVISION_NUMBER_PATTERN,
+            match.group("group"),
+            flags=re.IGNORECASE,
+        ):
+            canonical_number = (
+                canonicalize_provision_number(
+                    number_match.group(0)
+                )
+            )
+
+            if canonical_number:
+                numbers.append(
+                    canonical_number
+                )
+
+    return deduplicate_strings(
+        numbers
+    )
+
+
+def _legal_reference_provision_type(
+    prefix: str,
+) -> str | None:
+    """Map an explicit legal citation prefix to its provision type."""
+
+    normalized_prefix = (
+        str(prefix)
+        .strip()
+        .lower()
+        .rstrip(".")
+    )
+
+    if normalized_prefix in {
+        "article",
+        "articles",
+        "art",
+    }:
+        return "article"
+
+    if normalized_prefix in {
+        "section",
+        "sections",
+        "sec",
+        "secs",
+        "s",
+    }:
+        return "section"
+
+    return None
+
+
 # -------------------------------------------------------------------
 # Document and provision extraction
 # -------------------------------------------------------------------
@@ -224,36 +312,9 @@ def extract_section_numbers(
     question: str,
 ) -> list[str]:
     """Extract all explicit Section references."""
-
-    provision_pattern = (
-        r"\d+(?:[A-Za-z]+|-[A-Za-z]+)?"
-    )
-    grouped_pattern = (
-        r"\b(?:section|sections|sec\.?|secs\.?|s\.)\s*"
-        rf"(({provision_pattern})(?:\s*(?:,|and|or)\s*"
-        rf"{provision_pattern})*)\b"
-    )
-    grouped_matches = re.findall(
-        grouped_pattern,
+    return _extract_canonical_provision_numbers(
         question,
-        flags=re.IGNORECASE,
-    )
-    matches: list[str] = []
-
-    for grouped_match, _first_match in grouped_matches:
-        matches.extend(
-            re.findall(
-                provision_pattern,
-                grouped_match,
-                flags=re.IGNORECASE,
-            )
-        )
-
-    return deduplicate_strings(
-        [
-            match.upper()
-            for match in matches
-        ]
+        _SECTION_PREFIX_PATTERN,
     )
 
 
@@ -261,37 +322,115 @@ def extract_article_numbers(
     question: str,
 ) -> list[str]:
     """Extract all explicit Article references."""
-
-    provision_pattern = (
-        r"\d+(?:[A-Za-z]+|-[A-Za-z]+)?"
-    )
-    grouped_pattern = (
-        r"\b(?:article|articles|art\.?)\s*"
-        rf"(({provision_pattern})(?:\s*(?:,|and|or)\s*"
-        rf"{provision_pattern})*)\b"
-    )
-    grouped_matches = re.findall(
-        grouped_pattern,
+    return _extract_canonical_provision_numbers(
         question,
+        _ARTICLE_PREFIX_PATTERN,
+    )
+
+
+def _legal_reference_component_type(
+    subsection_path: list[str],
+) -> str | None:
+    """Return the canonical component type for a legal reference path."""
+
+    depth = len(subsection_path)
+
+    if depth == 0:
+        return None
+
+    component_types = {
+        1: "subsection",
+        2: "clause",
+        3: "paragraph",
+        4: "subparagraph",
+    }
+
+    return component_types.get(
+        depth,
+        "component",
+    )
+
+
+def extract_legal_references(
+    question: str,
+) -> list[LegalReference]:
+    """Extract explicit Section and Article citations with child paths."""
+
+    prefix_pattern = (
+        rf"(?:{_SECTION_PREFIX_PATTERN}|"
+        rf"{_ARTICLE_PREFIX_PATTERN})"
+    )
+    base_number_pattern = (
+        r"\d+(?:(?:\s*-\s*[A-Za-z]+)|[A-Za-z]+)?"
+    )
+    legal_reference_pattern = re.compile(
+        rf"\b(?P<prefix>{prefix_pattern})\s*"
+        rf"(?P<base>{base_number_pattern})"
+        rf"(?P<children>(?:\s*\(\s*"
+        rf"[A-Za-z0-9-]+\s*\))*)",
         flags=re.IGNORECASE,
     )
-    matches: list[str] = []
 
-    for grouped_match, _first_match in grouped_matches:
-        matches.extend(
-            re.findall(
-                provision_pattern,
-                grouped_match,
-                flags=re.IGNORECASE,
-            )
+    references: list[LegalReference] = []
+    seen: set[
+        tuple[str, str, tuple[str, ...], str | None, str]
+    ] = set()
+
+    for match in legal_reference_pattern.finditer(
+        question
+    ):
+        provision_type = _legal_reference_provision_type(
+            match.group("prefix")
         )
 
-    return deduplicate_strings(
-        [
-            match.upper()
-            for match in matches
+        if provision_type is None:
+            continue
+
+        base_number = canonicalize_provision_number(
+            match.group("base")
+        )
+
+        if not base_number:
+            continue
+
+        subsection_path = [
+            component.strip().lower()
+            for component in re.findall(
+                r"\(\s*([A-Za-z0-9-]+)\s*\)",
+                match.group("children"),
+            )
+            if component.strip()
         ]
-    )
+
+        reference = LegalReference(
+            provision_type=provision_type,
+            base_number=base_number,
+            subsection_path=subsection_path,
+            component_type=(
+                _legal_reference_component_type(
+                    subsection_path
+                )
+            ),
+            original_citation=match.group(
+                0
+            ).strip(),
+        )
+
+        reference_key = (
+            reference.provision_type,
+            reference.base_number,
+            tuple(reference.subsection_path),
+            reference.component_type,
+            reference.original_citation,
+        )
+
+        if reference_key in seen:
+            continue
+
+        seen.add(reference_key)
+        references.append(reference)
+
+    return references
 
 
 def extract_section_number(
@@ -889,6 +1028,10 @@ def route_question(
         original_question
     )
 
+    legal_references = extract_legal_references(
+        original_question
+    )
+
     provision_numbers = deduplicate_strings(
         section_numbers
         + article_numbers
@@ -952,6 +1095,7 @@ def route_question(
         ),
         provision_numbers=provision_numbers,
         provision_type=provision_type,
+        legal_references=legal_references,
     )
 
 

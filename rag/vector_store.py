@@ -121,6 +121,18 @@ PAYLOAD_INDEXES: tuple[
         PayloadSchemaType.KEYWORD,
     ),
     (
+        f"{METADATA_PAYLOAD_KEY}.base_provision_number",
+        PayloadSchemaType.KEYWORD,
+    ),
+    (
+        f"{METADATA_PAYLOAD_KEY}.subsection_path_key",
+        PayloadSchemaType.KEYWORD,
+    ),
+    (
+        f"{METADATA_PAYLOAD_KEY}.component_type",
+        PayloadSchemaType.KEYWORD,
+    ),
+    (
         f"{METADATA_PAYLOAD_KEY}.chapter_number",
         PayloadSchemaType.KEYWORD,
     ),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Iterable
 
 from langchain_core.documents import Document
@@ -11,23 +12,27 @@ from qdrant_client.models import (
 )
 
 from rag.concept_registry import LEGAL_CONCEPTS
-from rag.schemas import CandidateDocument
+from rag.legal_reference_normalizer import (
+    canonicalize_provision_number,
+)
+from rag.lexical_retriever import (
+    LexicalIndex,
+)
+from rag.schemas import CandidateDocument, LegalReference
 
 
 METADATA_PREFIX = "metadata"
 EXACT_PROVISION_SCROLL_LIMIT = 128
+logger = logging.getLogger(__name__)
 
 def normalize_provision_number(
     value: str | int | None,
 ) -> str | None:
     """Normalize a Section or Article number for metadata matching."""
 
-    if value is None:
-        return None
-
-    normalized = str(value).strip().upper()
-
-    return normalized or None
+    return canonicalize_provision_number(
+        value
+    )
 
 
 def normalize_string_list(
@@ -54,6 +59,37 @@ def normalize_string_list(
             )
 
     return normalized_values
+
+
+def normalize_legal_reference_path(
+    subsection_path: Iterable[str] | None,
+) -> list[str]:
+    """Normalize a structured subsection or clause path."""
+
+    if subsection_path is None:
+        return []
+
+    normalized_path: list[str] = []
+
+    for component in subsection_path:
+        normalized = str(component).strip().lower()
+
+        if normalized:
+            normalized_path.append(normalized)
+
+    return normalized_path
+
+
+def get_legal_reference_subsection_path_key(
+    subsection_path: Iterable[str] | None,
+) -> str:
+    """Return the canonical dotted key for a legal reference path."""
+
+    return ".".join(
+        normalize_legal_reference_path(
+            subsection_path
+        )
+    )
 
 
 def get_document_id(
@@ -116,6 +152,56 @@ def get_document_provision_number(
         or metadata.get("section_number")
         or metadata.get("article_number")
     )
+
+
+def get_document_base_provision_number(
+    document: Document,
+) -> str | None:
+    """Return a base provision number from new or legacy metadata."""
+
+    metadata = document.metadata
+
+    return normalize_provision_number(
+        metadata.get("base_provision_number")
+        or metadata.get("provision_number")
+        or metadata.get("section_number")
+        or metadata.get("article_number")
+    )
+
+
+def get_document_subsection_path_key(
+    document: Document,
+) -> str:
+    """Return the stored dotted subsection path key, if any."""
+
+    metadata = document.metadata
+    path_value = metadata.get(
+        "subsection_path_key"
+    )
+
+    if isinstance(path_value, list):
+        return get_legal_reference_subsection_path_key(
+            path_value
+        )
+
+    return str(
+        path_value or ""
+    ).strip().lower()
+
+
+def get_document_component_type(
+    document: Document,
+) -> str | None:
+    """Return the stored child component type, if any."""
+
+    component_type = str(
+        document.metadata.get(
+            "component_type",
+            "",
+        )
+    ).strip().lower()
+
+    return component_type or None
 
 
 def get_document_identity(
@@ -357,6 +443,120 @@ def build_provision_filter(
                 key=f"{METADATA_PREFIX}.provision_type",
                 match=MatchValue(
                     value=normalized_type
+                ),
+            )
+        )
+
+    normalized_document_ids = (
+        normalize_string_list(
+            document_ids
+        )
+    )
+
+    if normalized_document_ids:
+        conditions.append(
+            FieldCondition(
+                key=f"{METADATA_PREFIX}.document_id",
+                match=MatchAny(
+                    any=normalized_document_ids
+                ),
+            )
+        )
+
+    return Filter(
+        must=conditions
+    )
+
+
+def build_child_provision_filter(
+    reference: LegalReference,
+    document_ids: list[str] | None = None,
+) -> Filter:
+    """Build an exact filter for one structured subsection reference."""
+
+    provision_type = str(
+        reference.provision_type
+    ).strip().lower()
+
+    if provision_type not in {
+        "section",
+        "article",
+    }:
+        raise ValueError(
+            "reference.provision_type must be 'section' or 'article'."
+        )
+
+    base_provision_number = (
+        normalize_provision_number(
+            reference.base_number
+        )
+    )
+
+    if not base_provision_number:
+        raise ValueError(
+            "reference.base_number cannot be empty."
+        )
+
+    subsection_path_key = (
+        get_legal_reference_subsection_path_key(
+            reference.subsection_path
+        )
+    )
+
+    if not subsection_path_key:
+        raise ValueError(
+            "reference.subsection_path cannot be empty."
+        )
+
+    conditions: list[FieldCondition] = [
+        FieldCondition(
+            key=f"{METADATA_PREFIX}.provision_type",
+            match=MatchValue(
+                value=provision_type
+            ),
+        ),
+        FieldCondition(
+            key=(
+                f"{METADATA_PREFIX}."
+                "base_provision_number"
+            ),
+            match=MatchValue(
+                value=base_provision_number
+            ),
+        ),
+        FieldCondition(
+            key=(
+                f"{METADATA_PREFIX}."
+                "subsection_path_key"
+            ),
+            match=MatchValue(
+                value=subsection_path_key
+            ),
+        ),
+        FieldCondition(
+            key=(
+                f"{METADATA_PREFIX}."
+                "heading_only_chunk"
+            ),
+            match=MatchValue(
+                value=False
+            ),
+        ),
+    ]
+
+    component_type = str(
+        reference.component_type or ""
+    ).strip().lower()
+
+    if component_type:
+        conditions.append(
+            FieldCondition(
+                key=(
+                    f"{METADATA_PREFIX}."
+                    "component_type"
+                ),
+                match=MatchValue(
+                    value=component_type
                 ),
             )
         )
@@ -756,6 +956,7 @@ class AdaptiveRetriever:
         vector_store: Any,
     ) -> None:
         self.vector_store = vector_store
+        self._lexical_index: LexicalIndex | None = None
 
     def invoke(
         self,
@@ -821,6 +1022,103 @@ class AdaptiveRetriever:
                 )
                 for document in documents
             ]
+
+    def _load_lexical_documents(self) -> list[Document]:
+        """Load all usable Qdrant chunks for the cached BM25 index."""
+
+        client = getattr(
+            self.vector_store,
+            "client",
+            None,
+        )
+        collection_name = getattr(
+            self.vector_store,
+            "collection_name",
+            "",
+        )
+
+        if client is None or not collection_name:
+            return []
+
+        documents: list[Document] = []
+        offset: Any = None
+
+        while True:
+            scroll_result = client.scroll(
+                collection_name=collection_name,
+                scroll_filter=None,
+                limit=256,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+
+            if isinstance(
+                scroll_result,
+                tuple,
+            ):
+                points, next_offset = scroll_result
+            else:
+                points = getattr(
+                    scroll_result,
+                    "points",
+                    [],
+                )
+                next_offset = getattr(
+                    scroll_result,
+                    "next_page_offset",
+                    None,
+                )
+
+            if not points:
+                break
+
+            for point in points:
+                document = self._document_from_qdrant_point(
+                    point
+                )
+
+                if is_usable_document(document):
+                    documents.append(document)
+
+            if next_offset is None:
+                break
+
+            offset = next_offset
+
+        return documents
+
+    def _get_lexical_index(self) -> LexicalIndex | None:
+        """Build the BM25 corpus lazily and cache it for this retriever."""
+
+        if self._lexical_index is None:
+            self._lexical_index = LexicalIndex.from_documents(
+                self._load_lexical_documents()
+            )
+
+        return self._lexical_index
+
+    def search_lexical(
+        self,
+        query: str,
+        k: int,
+        document_ids: list[str] | None = None,
+    ) -> list[tuple[Document, float]]:
+        """Run deterministic BM25 retrieval over cached chunk payloads."""
+
+        if not query.strip():
+            return []
+
+        lexical_index = self._get_lexical_index()
+
+        if lexical_index is None:
+            return []
+
+        return lexical_index.search(
+            query=query,
+            k=k,
+            document_ids=document_ids,
+        )
 
     def _document_from_qdrant_point(
         self,
@@ -1137,6 +1435,213 @@ def retrieve_exact_provision_documents(
     ]
 
 
+def _document_matches_legal_reference(
+    document: Document,
+    reference: LegalReference,
+    document_ids: list[str] | None = None,
+) -> bool:
+    """Validate that a returned document matches one structured citation."""
+
+    if not is_usable_document(
+        document
+    ):
+        return False
+
+    normalized_document_ids = normalize_string_list(
+        document_ids
+    )
+
+    if (
+        normalized_document_ids
+        and get_document_id(document)
+        not in normalized_document_ids
+    ):
+        return False
+
+    provision_type = str(
+        reference.provision_type
+    ).strip().lower()
+
+    if (
+        get_document_provision_type(
+            document
+        )
+        != provision_type
+    ):
+        return False
+
+    if (
+        get_document_base_provision_number(
+            document
+        )
+        != normalize_provision_number(
+            reference.base_number
+        )
+    ):
+        return False
+
+    if (
+        get_document_subsection_path_key(
+            document
+        )
+        != get_legal_reference_subsection_path_key(
+            reference.subsection_path
+        )
+    ):
+        return False
+
+    expected_component_type = str(
+        reference.component_type or ""
+    ).strip().lower()
+    actual_component_type = (
+        get_document_component_type(
+            document
+        )
+    )
+
+    if (
+        expected_component_type
+        and actual_component_type
+        != expected_component_type
+    ):
+        return False
+
+    return True
+
+
+def _document_is_parent_provision_chunk(
+    document: Document,
+) -> bool:
+    """Return True when a retrieved document is a parent provision chunk."""
+
+    return not (
+        get_document_subsection_path_key(
+            document
+        )
+        or get_document_component_type(
+            document
+        )
+    )
+
+
+def retrieve_exact_legal_reference_documents(
+    retriever: AdaptiveRetriever,
+    question: str,
+    legal_references: list[LegalReference],
+    document_ids: list[str] | None,
+    top_k: int,
+) -> list[Document]:
+    """Fetch exact child references with deterministic parent fallback."""
+
+    exact_documents: list[Document] = []
+
+    for reference in legal_references:
+        if normalize_legal_reference_path(
+            reference.subsection_path
+        ):
+            child_filter = build_child_provision_filter(
+                reference=reference,
+                document_ids=document_ids,
+            )
+
+            try:
+                child_results = (
+                    retriever.scroll_documents(
+                        metadata_filter=child_filter,
+                        page_size=(
+                            EXACT_PROVISION_SCROLL_LIMIT
+                        ),
+                    )
+                )
+            except Exception:
+                child_results = []
+
+            matching_children = [
+                document
+                for document in child_results
+                if _document_matches_legal_reference(
+                    document=document,
+                    reference=reference,
+                    document_ids=document_ids,
+                )
+            ]
+
+            if matching_children:
+                exact_documents.extend(
+                    deduplicate_documents_in_order(
+                        matching_children
+                    )
+                )
+                continue
+
+            subsection_path_key = (
+                get_legal_reference_subsection_path_key(
+                    reference.subsection_path
+                )
+            )
+            logger.info(
+                (
+                    "Exact child %s %s(%s) not found; "
+                    "falling back to parent provision."
+                ),
+                reference.provision_type,
+                normalize_provision_number(
+                    reference.base_number
+                ),
+                subsection_path_key,
+            )
+
+            parent_results = (
+                retrieve_exact_provision_documents(
+                    retriever=retriever,
+                    question=question,
+                    provision_numbers=[
+                        reference.base_number
+                    ],
+                    provision_type=reference.provision_type,
+                    document_ids=document_ids,
+                    top_k=top_k,
+                )
+            )
+
+            parent_documents = [
+                document
+                for document, _score
+                in parent_results
+                if _document_is_parent_provision_chunk(
+                    document
+                )
+            ]
+
+            exact_documents.extend(
+                parent_documents
+            )
+            continue
+
+        parent_results = retrieve_exact_provision_documents(
+            retriever=retriever,
+            question=question,
+            provision_numbers=[
+                reference.base_number
+            ],
+            provision_type=reference.provision_type,
+            document_ids=document_ids,
+            top_k=top_k,
+        )
+
+        exact_documents.extend(
+            [
+                document
+                for document, _score
+                in parent_results
+            ]
+        )
+
+    return deduplicate_documents_in_order(
+        exact_documents
+    )
+
+
 def retrieve_neighbor_documents(
     retriever: AdaptiveRetriever,
     section_number: str,
@@ -1243,6 +1748,7 @@ def fetch_candidates(
     provision_type: str | None = None,
     provision_numbers: list[str] | None = None,
     article_number: str | None = None,
+    legal_references: list[LegalReference] | None = None,
 ) -> tuple[
     list[CandidateDocument],
     list[Document],
@@ -1332,7 +1838,26 @@ def fetch_candidates(
     ] = []
     exact_documents: list[Document] = []
 
-    if explicit_provision_numbers:
+    normalized_legal_references = list(
+        legal_references or []
+    )
+
+    if normalized_legal_references:
+        exact_documents = (
+            retrieve_exact_legal_reference_documents(
+                retriever=retriever,
+                question=question,
+                legal_references=(
+                    normalized_legal_references
+                ),
+                document_ids=(
+                    normalized_document_ids
+                ),
+                top_k=top_k,
+            )
+        )
+
+    elif explicit_provision_numbers:
         exact_results = (
             retrieve_exact_provision_documents(
                 retriever=retriever,
@@ -1355,20 +1880,6 @@ def fetch_candidates(
             for document, _score
             in exact_results
         ]
-
-        if (
-            exact_documents
-            and question_type
-            in {
-                "section_lookup",
-                "article_lookup",
-                "fact_scenario",
-            }
-        ):
-            return (
-                [],
-                exact_documents,
-            )
 
     semantic_filter = (
         build_document_filter(
@@ -1413,6 +1924,41 @@ def fetch_candidates(
                     ),
                     query_index=query_index,
                     query_text=query,
+                    retrieval_method="vector",
+                )
+            )
+
+        lexical_search = getattr(
+            retriever,
+            "search_lexical",
+            None,
+        )
+
+        if callable(lexical_search):
+            lexical_documents = lexical_search(
+                query=query,
+                k=top_k,
+                document_ids=normalized_document_ids
+                or None,
+            )
+        else:
+            lexical_documents = []
+
+        for document, lexical_score in lexical_documents:
+            if not is_usable_document(
+                document
+            ):
+                continue
+
+            candidate_items.append(
+                CandidateDocument(
+                    document=document,
+                    relevance_score=float(
+                        lexical_score
+                    ),
+                    query_index=query_index,
+                    query_text=query,
+                    retrieval_method="lexical",
                 )
             )
 

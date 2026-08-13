@@ -11,6 +11,9 @@ from dotenv import load_dotenv
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+from rag.legal_reference_normalizer import (
+    canonicalize_provision_number,
+)
 
 load_dotenv()
 
@@ -151,6 +154,10 @@ SUBSECTION_PATTERN = re.compile(
     r"(?mi)^\s*\((?:\d+|[a-z]|[ivxlcdm]+)\)\s+"
 )
 
+CHILD_COMPONENT_PATTERN = re.compile(
+    r"(?mi)^\s*\((?P<label>\d+|[a-z]+|[ivxlcdm]+)\)\s*"
+)
+
 BODY_START_PATTERN = re.compile(
     r"^(?:"
     r"\(\d+\)|"
@@ -231,6 +238,14 @@ class ProvisionBlock:
         return self.provision_body_present
 
 
+@dataclass(slots=True)
+class ChildComponentBlock:
+    subsection_path: list[str]
+    component_type: str
+    component_label: str
+    text: str
+
+
 # Backward-compatible class name used by the earlier implementation.
 SectionBlock = ProvisionBlock
 
@@ -293,16 +308,14 @@ def normalize_provision_type(value: Any) -> str:
     return normalized
 
 
-def normalize_provision_number(value: str) -> str:
-    """Normalize values such as ``298 - C`` to ``298-C``."""
+def normalize_provision_number(
+    value: str | int | None,
+) -> str | None:
+    """Normalize values such as ``298 - C`` to ``298C``."""
 
-    normalized = re.sub(
-        r"\s+",
-        "",
-        value.strip().upper(),
+    return canonicalize_provision_number(
+        value
     )
-
-    return normalized
 
 
 def is_likely_provision_number(
@@ -311,17 +324,20 @@ def is_likely_provision_number(
 ) -> bool:
     normalized_number = normalize_provision_number(number)
 
+    if not normalized_number:
+        return False
+
     if expected_provision_type == "section":
         return bool(
             re.fullmatch(
-                r"\d+(?:-[A-Z]{1,2}|[A-Z]{1,2})?",
+                r"\d+[A-Z]{0,2}",
                 normalized_number,
             )
         )
 
     return bool(
         re.fullmatch(
-            r"\d+(?:-[A-Z]{1,3}|[A-Z]{1,3})?",
+            r"\d+[A-Z]{0,3}",
             normalized_number,
         )
     )
@@ -662,6 +678,9 @@ def is_valid_provision_candidate(
     if explicit_label and (
         explicit_label != expected_provision_type
     ):
+        return False
+
+    if not number:
         return False
 
     if not is_likely_provision_number(
@@ -1176,6 +1195,9 @@ def parse_provision_blocks(
             )
         )
 
+        if not provision_number:
+            continue
+
         (
             provision_title,
             inline_body,
@@ -1357,7 +1379,7 @@ def create_provision_metadata(
             "Provision block is missing document_id."
         )
 
-    provision_number = (
+    provision_number = normalize_provision_number(
         block.provision_number
     )
 
@@ -1383,6 +1405,7 @@ def create_provision_metadata(
         {
             "provision_type": block.provision_type,
             "provision_number": provision_number,
+            "base_provision_number": provision_number,
             "provision_title": provision_title,
             "provision_identity": provision_identity,
             "provision_numbers": (
@@ -1541,46 +1564,174 @@ def remove_existing_heading(
     ).strip()
 
 
-def split_large_provision(
-    block: ProvisionBlock,
-    text_splitter: RecursiveCharacterTextSplitter,
-) -> list[Document]:
+def _child_component_type(
+    label: str,
+) -> str | None:
+    """Map a child marker label to a conservative component type."""
+
+    normalized_label = label.strip().lower()
+
+    if not normalized_label:
+        return None
+
+    if normalized_label.isdigit():
+        return "subsection"
+
+    if re.fullmatch(
+        r"[a-z]+",
+        normalized_label,
+    ):
+        return "clause"
+
+    if re.fullmatch(
+        r"[ivxlcdm]+",
+        normalized_label,
+    ):
+        return "paragraph"
+
+    return None
+
+
+def parse_child_components(
+    body_text: str,
+) -> list[ChildComponentBlock]:
     """
-    Split a large Section/Article while repeating its document and
-    provision heading in every part.
+    Extract child subsection/clause/paragraph spans from a provision body.
+
+    The parser is deliberately conservative: numeric markers start
+    subsection paths, alphabetic markers only become clauses after a
+    subsection has started, and roman markers only become nested after
+    a clause has started.
     """
 
-    metadata = create_provision_metadata(
-        block
+    matches = list(
+        CHILD_COMPONENT_PATTERN.finditer(
+            body_text
+        )
     )
 
-    context_heading = build_context_heading(
-        metadata=metadata,
-        provision_type=block.provision_type,
-        provision_number=(
-            block.provision_number
-        ),
-        provision_title=(
-            block.provision_title
-        ),
-    )
+    if not matches:
+        return []
 
-    body = block.text.strip()
+    components: list[ChildComponentBlock] = []
+    current_subsection: str | None = None
+    current_clause: str | None = None
 
-    if block.provision_number:
-        body_without_heading = (
-            remove_existing_heading(
-                block_text=body,
-                provision_number=(
-                    block.provision_number
-                ),
+    for index, match in enumerate(
+        matches
+    ):
+        label = match.group(
+            "label"
+        ).strip().lower()
+        component_type = _child_component_type(
+            label
+        )
+
+        if component_type is None:
+            continue
+
+        if component_type == "subsection":
+            current_subsection = label
+            current_clause = None
+            subsection_path = [label]
+
+        elif component_type == "clause":
+            if current_subsection is None:
+                continue
+
+            current_clause = label
+            subsection_path = [
+                current_subsection,
+                label,
+            ]
+
+        else:
+            if (
+                current_subsection is None
+                or current_clause is None
+            ):
+                continue
+
+            subsection_path = [
+                current_subsection,
+                current_clause,
+                label,
+            ]
+
+        next_start = (
+            matches[index + 1].start()
+            if index + 1 < len(matches)
+            else len(body_text)
+        )
+
+        component_text = body_text[
+            match.start():next_start
+        ].strip()
+
+        components.append(
+            ChildComponentBlock(
+                subsection_path=subsection_path,
+                component_type=component_type,
+                component_label=f"({label})",
+                text=component_text,
             )
         )
 
-        if body_without_heading:
-            body = body_without_heading
+    return components
 
-    # Account for the repeated heading when deciding whether to split.
+
+def build_child_context_heading(
+    metadata: dict[str, Any],
+    provision_type: str,
+    provision_number: str | None,
+    subsection_path: list[str],
+) -> str:
+    """Build a context heading for a subsection or clause chunk."""
+
+    base_heading = build_context_heading(
+        metadata=metadata,
+        provision_type=provision_type,
+        provision_number=provision_number,
+        provision_title=metadata.get(
+            "provision_title"
+        ),
+    )
+
+    if not provision_number or not subsection_path:
+        return base_heading
+
+    child_citation = "".join(
+        f"({part})"
+        for part in subsection_path
+    )
+
+    return (
+        f"{base_heading} | "
+        f"{provision_type.title()} "
+        f"{provision_number}{child_citation}"
+    )
+
+
+def split_text_with_context_heading(
+    body_text: str,
+    context_heading: str,
+    metadata: dict[str, Any],
+    text_splitter: RecursiveCharacterTextSplitter,
+) -> list[Document]:
+    """Split one body string while prepending a canonical heading."""
+
+    body = body_text.strip()
+
+    if not body:
+        return [
+            Document(
+                page_content=context_heading.strip(),
+                metadata=deepcopy(
+                    metadata
+                ),
+            )
+        ]
+
     heading_cost = (
         len(context_heading) + 2
         if PREPEND_DOCUMENT_CONTEXT
@@ -1604,12 +1755,12 @@ def split_large_provision(
         return [
             Document(
                 page_content=content,
-                metadata=metadata,
+                metadata=deepcopy(
+                    metadata
+                ),
             )
         ]
 
-    # A dedicated temporary splitter keeps the final body parts small
-    # enough after the canonical heading is added.
     body_splitter = RecursiveCharacterTextSplitter(
         chunk_size=effective_body_limit,
         chunk_overlap=min(
@@ -1625,15 +1776,15 @@ def split_large_provision(
         separators=SPLIT_SEPARATORS,
     )
 
-    body_chunks = (
-        body_splitter.split_documents(
-            [
-                Document(
-                    page_content=body,
-                    metadata=metadata,
-                )
-            ]
-        )
+    body_chunks = body_splitter.split_documents(
+        [
+            Document(
+                page_content=body,
+                metadata=deepcopy(
+                    metadata
+                ),
+            )
+        ]
     )
 
     results: list[Document] = []
@@ -1676,6 +1827,130 @@ def split_large_provision(
 
         chunk.page_content = content
         results.append(chunk)
+
+    return results
+
+
+def split_large_provision(
+    block: ProvisionBlock,
+    text_splitter: RecursiveCharacterTextSplitter,
+) -> list[Document]:
+    """
+    Split a large Section/Article while repeating its document and
+    provision heading in every part.
+    """
+
+    metadata = create_provision_metadata(
+        block
+    )
+
+    context_heading = build_context_heading(
+        metadata=metadata,
+        provision_type=block.provision_type,
+        provision_number=(
+            block.provision_number
+        ),
+        provision_title=(
+            block.provision_title
+        ),
+    )
+
+    body = block.text.strip()
+
+    if block.provision_number:
+        body_without_heading = (
+            remove_existing_heading(
+                block_text=body,
+                provision_number=(
+                    block.provision_number
+                ),
+            )
+        )
+
+        if body_without_heading:
+            body = body_without_heading
+    results = split_text_with_context_heading(
+        body_text=body,
+        context_heading=context_heading,
+        metadata=metadata,
+        text_splitter=text_splitter,
+    )
+
+    child_components = parse_child_components(
+        body
+    )
+
+    if not child_components:
+        return results
+
+    if (
+        len(child_components) == 1
+        and len(
+            child_components[0].subsection_path
+        ) == 1
+    ):
+        return results
+
+    for child_component in child_components:
+        child_metadata = deepcopy(
+            metadata
+        )
+        child_metadata.update(
+            {
+                "base_provision_number": (
+                    block.provision_number
+                ),
+                "subsection_path": (
+                    list(
+                        child_component.subsection_path
+                    )
+                ),
+                "subsection_path_key": (
+                    ".".join(
+                        child_component.subsection_path
+                    )
+                ),
+                "component_type": (
+                    child_component.component_type
+                ),
+                "component_label": (
+                    child_component.component_label
+                ),
+            }
+        )
+
+        child_heading = build_child_context_heading(
+            metadata=child_metadata,
+            provision_type=block.provision_type,
+            provision_number=block.provision_number,
+            subsection_path=(
+                child_component.subsection_path
+            ),
+        )
+
+        child_body = child_component.text
+
+        child_marker_match = (
+            CHILD_COMPONENT_PATTERN.match(
+                child_body
+            )
+        )
+
+        if child_marker_match:
+            child_body = child_body[
+                child_marker_match.end():
+            ].strip()
+
+        child_results = split_text_with_context_heading(
+            body_text=child_body,
+            context_heading=child_heading,
+            metadata=child_metadata,
+            text_splitter=text_splitter,
+        )
+
+        results.extend(
+            child_results
+        )
 
     return results
 
