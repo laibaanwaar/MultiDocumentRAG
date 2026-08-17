@@ -29,7 +29,7 @@ The system remains grounded in the same core idea: ingest the PDFs, clean and sp
 - Collection name: `pakistan_legal_knowledge_base`
 - Embedding model: `sentence-transformers/all-MiniLM-L6-v2`
 - Embedding dimension: `384`
-- Main answer model: `llama-3.3-70b-versatile` via Groq
+- Main answer model: `openai/gpt-oss-120b` via Groq
 - RAGAS model: `llama-3.1-8b-instant`
 - Qdrant storage path: `qdrant_storage`
 
@@ -52,6 +52,8 @@ The system remains grounded in the same core idea: ingest the PDFs, clean and sp
 - Source citations
 - CLI-based querying
 - ATA-specific evaluation generation and scoring
+- Retrieval observability traces
+- Versioned retrieval regression evaluation
 
 ---
 
@@ -104,6 +106,16 @@ Main entry point:
 python query_cli.py
 ```
 
+### Retrieval Observability
+
+The answer pipeline can now return an optional retrieval trace for debugging and evaluation.
+
+- `rag/answer_service.py` accepts `include_trace=True` and adds a safe `retrieval_trace` payload.
+- The trace records normalized question routing, retrieval queries, candidate summaries, ranked items, selected context summaries, cited source labels, and timing information.
+- Retrieval events are recorded for exact, vector, lexical, and neighbor routes without exposing raw prompts or secrets.
+
+This is used by the F-12 retrieval evaluation work and by the local metrics script when trace data is present.
+
 ### ATA Evaluation Flow
 
 The Anti-Terrorism Act evaluation flow now has its own dedicated files.
@@ -114,8 +126,9 @@ Working files:
 - `ata_predictions.jsonl`
 - `ata_evaluation_matrix.csv`
 - `ata_evaluation_summary.json`
+- `evaluation/gold/legal_rag_gold_v1.jsonl`
 
-These ATA files are the dedicated evaluation set and outputs for the Anti-Terrorism Act workflow.
+These ATA files are the dedicated evaluation set and outputs for the Anti-Terrorism Act workflow. The versioned gold file is the retrieval regression set used for observability and recall-style evaluation.
 
 ATA scripts:
 
@@ -275,6 +288,8 @@ python generate_ata_predictions.py
 python evaluate_local_metrics.py --samples ata_eval_samples.jsonl --predictions ata_predictions.jsonl --output-csv ata_evaluation_matrix.csv --output-summary ata_evaluation_summary.json
 ```
 
+The local metrics output now also supports retrieval-focused fields such as recall@k, reciprocal rank, duplicate-context rate, exact-citation completeness, failure rate, and latency summaries when trace data is available.
+
 ### Run RAGAS Evaluation
 
 ```bash
@@ -286,6 +301,7 @@ python evaluate_ragas.py --input evaluation/ata/ata_eval_samples.jsonl --predict
 ## Notes
 
 - The ATA evaluation files are intentionally separate from the main `eval_samples.jsonl` workflow.
+- The retrieval trace is optional and does not change the default answer response shape unless explicitly requested.
 - The current pipeline is multi-document, but it still depends on high-quality legal metadata during ingestion.
 - If the Qdrant collection is rebuilt, the README commands above still apply as long as the environment variables point to the same collection.
 

@@ -33,3 +33,6 @@ recall_scores_all.csv
 
 local_evaluation_matrix.csv
 local_evaluation_summary.json
+qdrant_storage_backup_pre_f03/
+qdrant_storage_backup_pre_f04/
+qdrant_storage_backup_pre_f10/

@@ -1,0 +1,36 @@
+{
+  "sample_count": 20,
+  "dataset_version": "legal_rag_gold_v1",
+  "metrics": {
+    "document_accuracy": 1.0,
+    "retrieval_hit_at_5": 0.75,
+    "provision_accuracy": 0.9,
+    "citation_presence": 0.95,
+    "answer_reference_cosine_similarity": 0.591740059107542,
+    "invalid_provision_rejection_accuracy": 0.0,
+    "context_precision_local": 0.37083333333333335,
+    "context_recall_local": 0.9,
+    "retrieval_recall_at_5": 0.9,
+    "reciprocal_rank": 0.6833333333333333,
+    "duplicate_context_rate": 0.0,
+    "retrieval_failed_rate": 0.0,
+    "no_match_rate": 0.0,
+    "exact_citation_completeness": 0.9,
+    "retrieval_latency_ms": 243.3693500006484,
+    "ranking_latency_ms": 7.719050000741845,
+    "selection_latency_ms": 0.15555000063613988,
+    "generation_latency_ms": 17695.327680000264,
+    "total_latency_ms": 17959.095259999594,
+    "total_latency_ms_p50": 10650.11930000037,
+    "total_latency_ms_p95": 57867.44635499672
+  },
+  "counts": {
+    "samples_with_predictions": 20,
+    "invalid_provision_samples": 1,
+    "nonexistent_provision_samples": 1,
+    "retrieval_failed_samples": 0,
+    "no_match_samples": 0,
+    "samples_with_traces": 20
+  },
+  "hit_k": 5
+}

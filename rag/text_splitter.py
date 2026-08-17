@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+from rag.metadata_schema import validate_legal_chunk_metadata
 from rag.legal_reference_normalizer import (
     canonicalize_provision_number,
 )
@@ -1969,6 +1970,11 @@ def validate_final_chunks(
     """Fail early if a generated chunk lacks required metadata."""
 
     errors: list[str] = []
+    seen_chunk_ids: set[str] = set()
+    provision_groups: dict[
+        tuple[str, str],
+        dict[str, list[Document]],
+    ] = {}
 
     for index, chunk in enumerate(
         chunks,
@@ -1983,21 +1989,30 @@ def validate_final_chunks(
                 f"Chunk {index}: empty content"
             )
 
-        required_document_fields = (
-            "document_id",
-            "document_name",
-            "document_title",
-            "document_short_name",
-            "document_type",
-            "provision_type",
+        validation = validate_legal_chunk_metadata(
+            metadata,
+            allow_unsectioned=bool(
+                metadata.get("is_unsectioned_chunk")
+            ),
+            point_id=f"Chunk {index}",
         )
 
-        for field_name in required_document_fields:
-            if not metadata.get(field_name):
+        for issue in validation.issues:
+            errors.append(
+                f"Chunk {index}: {issue.message}"
+            )
+
+        chunk_id = str(
+            metadata.get("chunk_id") or ""
+        ).strip()
+
+        if chunk_id:
+            if chunk_id in seen_chunk_ids:
                 errors.append(
-                    f"Chunk {index}: missing "
-                    f"{field_name}"
+                    f"Chunk {index}: duplicate chunk_id"
                 )
+            else:
+                seen_chunk_ids.add(chunk_id)
 
         if metadata.get(
             "is_unsectioned_chunk"
@@ -2095,6 +2110,47 @@ def validate_final_chunks(
                 f"Chunk {index}: invalid page range"
             )
 
+        if metadata.get("is_unsectioned_chunk"):
+            continue
+
+        provision_ordinal = metadata.get(
+            "provision_ordinal"
+        )
+
+        if (
+            not isinstance(provision_ordinal, int)
+            or provision_ordinal <= 0
+        ):
+            errors.append(
+                f"Chunk {index}: invalid provision_ordinal"
+            )
+
+        provision_identity = str(
+            metadata.get("provision_identity") or ""
+        ).strip()
+        document_id = str(
+            metadata.get("document_id") or ""
+        ).strip()
+        provision_type = str(
+            metadata.get("provision_type") or ""
+        ).strip().lower()
+
+        if (
+            not provision_identity
+            or not document_id
+            or provision_type not in {"section", "article"}
+        ):
+            continue
+
+        scope_key = (document_id, provision_type)
+        provision_groups.setdefault(
+            scope_key,
+            {},
+        ).setdefault(
+            provision_identity,
+            [],
+        ).append(chunk)
+
     if errors:
         preview = "\n".join(
             f"- {error}"
@@ -2105,6 +2161,243 @@ def validate_final_chunks(
             "Final chunk validation failed:\n"
             f"{preview}"
         )
+
+    sequence_errors: list[str] = []
+
+    for (
+        document_scope,
+        scope_groups,
+    ) in provision_groups.items():
+        ordered_groups = sorted(
+            scope_groups.items(),
+            key=lambda item: (
+                item[1][0].metadata.get(
+                    "provision_ordinal",
+                    0,
+                )
+            ),
+        )
+
+        expected_ordinals = list(
+            range(
+                1,
+                len(ordered_groups) + 1,
+            )
+        )
+
+        observed_ordinals = [
+            int(
+                group_chunks[0].metadata.get(
+                    "provision_ordinal",
+                    0,
+                )
+                or 0
+            )
+            for _identity, group_chunks in ordered_groups
+        ]
+
+        if observed_ordinals != expected_ordinals:
+            sequence_errors.append(
+                (
+                    f"Sequence {document_scope}: "
+                    "provision ordinals are not contiguous"
+                )
+            )
+            continue
+
+        for index, (_identity, group_chunks) in enumerate(
+            ordered_groups,
+            start=1,
+        ):
+            expected_previous = (
+                None
+                if index == 1
+                else ordered_groups[index - 2][1][0].metadata.get(
+                    "provision_number"
+                )
+            )
+            expected_next = (
+                None
+                if index == len(ordered_groups)
+                else ordered_groups[index][1][0].metadata.get(
+                    "provision_number"
+                )
+            )
+
+            for chunk in group_chunks:
+                metadata = chunk.metadata
+
+                if metadata.get("provision_ordinal") != index:
+                    sequence_errors.append(
+                        (
+                            f"Sequence {document_scope}: "
+                            f"provision_ordinal mismatch for "
+                            f"{metadata.get('provision_identity')}"
+                        )
+                    )
+                    break
+
+                if metadata.get("previous_provision_number") != expected_previous:
+                    sequence_errors.append(
+                        (
+                            f"Sequence {document_scope}: "
+                            f"previous_provision_number mismatch for "
+                            f"{metadata.get('provision_identity')}"
+                        )
+                    )
+                    break
+
+                if metadata.get("next_provision_number") != expected_next:
+                    sequence_errors.append(
+                        (
+                            f"Sequence {document_scope}: "
+                            f"next_provision_number mismatch for "
+                            f"{metadata.get('provision_identity')}"
+                        )
+                    )
+                    break
+
+    if sequence_errors:
+        preview = "\n".join(
+            f"- {error}"
+            for error in sequence_errors[:25]
+        )
+
+        raise RuntimeError(
+            "Final chunk sequence validation failed:\n"
+            f"{preview}"
+        )
+
+
+def _assign_provision_sequence_metadata(
+    chunks: list[Document],
+) -> None:
+    """Assign source-order provision ordinals and adjacency metadata."""
+
+    ordered_groups: dict[
+        tuple[str, str],
+        list[str],
+    ] = {}
+    grouped_chunks: dict[
+        tuple[str, str, str],
+        list[Document],
+    ] = {}
+
+    for chunk in chunks:
+        metadata = chunk.metadata
+
+        if metadata.get("is_unsectioned_chunk"):
+            continue
+
+        document_id = str(
+            metadata.get("document_id") or ""
+        ).strip()
+        provision_type = str(
+            metadata.get("provision_type") or ""
+        ).strip().lower()
+        provision_identity = str(
+            metadata.get("provision_identity") or ""
+        ).strip()
+
+        if (
+            not document_id
+            or provision_type not in {"section", "article"}
+            or not provision_identity
+        ):
+            continue
+
+        scope_key = (document_id, provision_type)
+        group_key = (
+            document_id,
+            provision_type,
+            provision_identity,
+        )
+
+        ordered_groups.setdefault(
+            scope_key,
+            [],
+        )
+
+        if provision_identity not in ordered_groups[scope_key]:
+            ordered_groups[scope_key].append(
+                provision_identity
+            )
+
+        grouped_chunks.setdefault(
+            group_key,
+            [],
+        ).append(chunk)
+
+    for scope_key, provision_identities in ordered_groups.items():
+        for ordinal, provision_identity in enumerate(
+            provision_identities,
+            start=1,
+        ):
+            group_key = (
+                scope_key[0],
+                scope_key[1],
+                provision_identity,
+            )
+            group_chunks = grouped_chunks.get(
+                group_key,
+                [],
+            )
+
+            if not group_chunks:
+                continue
+
+            previous_identity = (
+                provision_identities[ordinal - 2]
+                if ordinal > 1
+                else None
+            )
+            next_identity = (
+                provision_identities[ordinal]
+                if ordinal < len(provision_identities)
+                else None
+            )
+
+            previous_number = (
+                grouped_chunks[
+                    (
+                        scope_key[0],
+                        scope_key[1],
+                        previous_identity,
+                    )
+                ][0].metadata.get("provision_number")
+                if previous_identity is not None
+                else None
+            )
+            next_number = (
+                grouped_chunks[
+                    (
+                        scope_key[0],
+                        scope_key[1],
+                        next_identity,
+                    )
+                ][0].metadata.get("provision_number")
+                if next_identity is not None
+                else None
+            )
+
+            for chunk in group_chunks:
+                chunk.metadata.update(
+                    {
+                        "provision_ordinal": ordinal,
+                        "previous_provision_number": (
+                            previous_number
+                        ),
+                        "next_provision_number": (
+                            next_number
+                        ),
+                        "previous_provision_identity": (
+                            previous_identity
+                        ),
+                        "next_provision_identity": (
+                            next_identity
+                        ),
+                    }
+                )
 
 
 # -------------------------------------------------------------------
@@ -2501,6 +2794,10 @@ def create_chunks(
                 ),
             }
         )
+
+    _assign_provision_sequence_metadata(
+        cleaned_chunks
+    )
 
     validate_final_chunks(
         cleaned_chunks

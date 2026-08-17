@@ -537,7 +537,10 @@ def _build_single_evaluation_row(
         question=row["question"],
         retriever=retriever,
         chat_model=chat_model,
+        include_trace=True,
     )
+
+    retrieval_trace = result.get("retrieval_trace") or {}
 
     return {
         "user_input": row["question"],
@@ -546,6 +549,12 @@ def _build_single_evaluation_row(
         "retrieved_contexts": result.get("retrieved_contexts", []),
         "question_type": result.get("question_type"),
         "sample_id": sample_id,
+        "retrieval_trace": result.get("retrieval_trace"),
+        "retrieval_status": result.get(
+            "retrieval_status",
+            retrieval_trace.get("retrieval_status"),
+        ),
+        "sources": result.get("sources", []),
     }
 
 

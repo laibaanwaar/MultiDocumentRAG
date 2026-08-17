@@ -108,6 +108,26 @@ LEGAL_CONCEPTS: dict[str, dict[str, Any]] = {
             "punishment",
         },
     },
+    "terrorism": {
+        "markers": (
+            "terrorism",
+            "act of terrorism",
+            "acts of terrorism",
+        ),
+        "queries": (
+            "Section 6 definition of terrorism under the Anti-Terrorism Act",
+            "Acts constituting terrorism under Section 6 of the Anti-Terrorism Act",
+        ),
+        "preferred_documents": {"ata_1997"},
+        "preferred_sections": {"6"},
+        "keywords": {
+            "terrorism",
+            "act of terrorism",
+            "acts of terrorism",
+            "section 6",
+            "anti-terrorism act",
+        },
+    },
     "breach_of_trust": {
         "markers": (
             "embezzle",

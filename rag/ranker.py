@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-from collections import Counter
 from typing import Any, Iterable
 
 from langchain_core.documents import Document
@@ -835,6 +834,126 @@ def text_similarity(
     )
 
 
+def _unique_extend_strings(
+    target: list[str],
+    values: list[str],
+) -> None:
+    """Append unique string values while preserving order."""
+
+    seen = {value.strip() for value in target if value.strip()}
+
+    for value in values:
+        cleaned_value = str(value).strip()
+
+        if cleaned_value and cleaned_value not in seen:
+            target.append(cleaned_value)
+            seen.add(cleaned_value)
+
+
+def _unique_extend_ints(
+    target: list[int],
+    values: list[int],
+) -> None:
+    """Append unique integer values while preserving order."""
+
+    seen = set(target)
+
+    for value in values:
+        if value not in seen:
+            target.append(value)
+            seen.add(value)
+
+
+def _route_label(
+    retrieval_method: str,
+    query_index: int,
+    query_text: str,
+) -> str:
+    """Return a stable provenance label for one retrieval route."""
+
+    return (
+        f"{retrieval_method.strip().lower()}"
+        f"|{query_index}"
+        f"|{query_text}"
+    )
+
+
+def _is_exact_ranked_document(
+    item: RankedDocument,
+) -> bool:
+    """Return True when the item was produced by exact retrieval."""
+
+    normalized_methods = {
+        method.strip().lower()
+        for method in item.retrieval_methods
+        if str(method).strip()
+    }
+    normalized_routes = {
+        route.strip().lower()
+        for route in item.retrieval_routes
+        if str(route).strip()
+    }
+
+    return (
+        "exact" in normalized_methods
+        or "exact" in normalized_routes
+    )
+
+
+def _merge_ranked_document_provenance(
+    target: RankedDocument,
+    source: RankedDocument,
+) -> None:
+    """Merge provenance fields from one ranked document into another."""
+
+    _unique_extend_strings(
+        target.retrieval_methods,
+        source.retrieval_methods,
+    )
+    _unique_extend_ints(
+        target.matched_query_indices,
+        source.matched_query_indices,
+    )
+    _unique_extend_strings(
+        target.retrieval_routes,
+        source.retrieval_routes,
+    )
+    target.matched_queries = len(
+        target.retrieval_routes
+    )
+
+
+def _candidate_route_sort_key(
+    candidate: CandidateDocument,
+) -> tuple[Any, ...]:
+    """Sort scored vector candidates by score and unscored ones by backend rank."""
+
+    relevance_score = candidate.relevance_score
+
+    if relevance_score is not None:
+        return (
+            0,
+            -float(relevance_score),
+            str(
+                _document_key(
+                    candidate.document
+                )
+            ),
+        )
+
+    return (
+        1,
+        candidate.retrieval_rank
+        if candidate.retrieval_rank is not None
+        else 10**9,
+        str(
+            _document_key(
+                candidate.document
+            )
+        ),
+    )
+
+
 def deduplicate_ranked_documents(
     items: list[RankedDocument],
     semantic_threshold: float,
@@ -888,6 +1007,29 @@ def deduplicate_ranked_documents(
                 >= semantic_threshold
             ):
                 duplicate = True
+
+                retained = existing
+                discarded = item
+
+                if (
+                    _is_exact_ranked_document(item)
+                    and not _is_exact_ranked_document(
+                        existing
+                    )
+                ):
+                    retained = item
+                    discarded = existing
+
+                _merge_ranked_document_provenance(
+                    retained,
+                    discarded,
+                )
+
+                if retained is item and existing in selected:
+                    selected[
+                        selected.index(existing)
+                    ] = item
+
                 break
 
         if not duplicate:
@@ -913,79 +1055,112 @@ def rank_candidates(
             "semantic_threshold must be between 0 and 1."
         )
 
-    fused_results: dict[
-        tuple[Any, ...],
-        RankedDocument,
+    fused_results: dict[tuple[Any, ...], RankedDocument] = {}
+
+    route_candidates: dict[
+        tuple[str, int, str],
+        list[CandidateDocument],
     ] = {}
 
-    query_ranks: Counter[tuple[str, int]] = (
-        Counter()
-    )
-
     for candidate in candidates:
-        key = _document_key(
-            candidate.document
-        )
-
         retrieval_method = str(
-            candidate.retrieval_method
-            or "vector"
+            candidate.retrieval_method or "vector"
         ).strip().lower() or "vector"
-
-        query_rank_key = (
+        route_key = (
             retrieval_method,
             candidate.query_index,
+            str(candidate.query_text or ""),
+        )
+        route_candidates.setdefault(
+            route_key,
+            [],
+        ).append(candidate)
+
+    for route_key in sorted(
+        route_candidates,
+        key=lambda value: (
+            value[0],
+            value[1],
+            value[2],
+        ),
+    ):
+        retrieval_method, query_index, query_text = route_key
+        route_label = _route_label(
+            retrieval_method,
+            query_index,
+            query_text,
         )
 
-        query_ranks[
-            query_rank_key
-        ] += 1
+        ordered_candidates = sorted(
+            route_candidates[route_key],
+            key=_candidate_route_sort_key,
+        )
 
-        candidate_rank = query_ranks[
-            query_rank_key
-        ]
+        seen_keys: set[tuple[Any, ...]] = set()
 
-        if key not in fused_results:
-            fused_results[key] = (
-                RankedDocument(
-                    document=(
-                        candidate.document
-                    ),
+        for candidate_rank, candidate in enumerate(
+            ordered_candidates,
+            start=1,
+        ):
+            key = _document_key(
+                candidate.document
+            )
+
+            if key in seen_keys:
+                continue
+
+            seen_keys.add(key)
+
+            if key not in fused_results:
+                fused_results[key] = RankedDocument(
+                    document=candidate.document,
                     fusion_score=0.0,
                     relevance_score=(
                         normalize_similarity_score(
                             candidate.relevance_score
                         )
-                        if retrieval_method
-                        == "vector"
-                        else 0.0
+                        if (
+                            retrieval_method == "vector"
+                            and candidate.relevance_score is not None
+                        )
+                        else None
                     ),
                     matched_queries=0,
+                    retrieval_methods=[],
+                    matched_query_indices=[],
+                    retrieval_routes=[],
                 )
-            )
 
-        item = fused_results[
-            key
-        ]
+            item = fused_results[key]
 
-        # Reciprocal-rank fusion uses the rank within each query.
-        item.fusion_score += (
-            1.0
-            / (
-                60
-                + candidate_rank
-            )
-        )
-        item.matched_queries += 1
+            if route_label in item.retrieval_routes:
+                continue
 
-        if retrieval_method == "vector":
-            item.relevance_score = max(
-                item.relevance_score
-                or 0.0,
-                normalize_similarity_score(
-                    candidate.relevance_score
-                ),
-            )
+            # Reciprocal-rank fusion uses the deterministic rank within each route.
+            item.fusion_score += 1.0 / (60 + candidate_rank)
+            item.matched_queries += 1
+            item.retrieval_routes.append(route_label)
+
+            if retrieval_method not in item.retrieval_methods:
+                item.retrieval_methods.append(
+                    retrieval_method
+                )
+
+            if candidate.query_index not in item.matched_query_indices:
+                item.matched_query_indices.append(
+                    candidate.query_index
+                )
+
+            if (
+                retrieval_method == "vector"
+                and candidate.relevance_score is not None
+            ):
+                item.relevance_score = max(
+                    item.relevance_score or 0.0,
+                    normalize_similarity_score(
+                        candidate.relevance_score
+                    ),
+                )
 
     ranked_items = list(
         fused_results.values()
@@ -1031,6 +1206,11 @@ def rank_candidates(
             or 0.0,
             -get_part_number(
                 item.document
+            ),
+            str(
+                _document_key(
+                    item.document
+                )
             ),
         ),
         reverse=True,
@@ -1423,11 +1603,9 @@ def calculate_retrieval_confidence(
     similarities = [
         normalize_similarity_score(
             item.relevance_score
-            or 0.0
         )
-        for item in ranked_items[
-            :10
-        ]
+        for item in ranked_items[:10]
+        if item.relevance_score is not None
     ]
 
     top_similarity = max(

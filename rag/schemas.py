@@ -114,11 +114,12 @@ class CandidateDocument:
     """
 
     document: Document
-    relevance_score: float
+    relevance_score: float | None
     query_index: int
     query_text: str
 
     retrieval_method: str = "vector"
+    retrieval_rank: int | None = None
 
     @property
     def metadata(self) -> dict[str, Any]:
@@ -153,6 +154,9 @@ class RankedDocument:
 
     relevance_score: float | None = None
     matched_queries: int = 1
+    retrieval_methods: list[str] = field(default_factory=list)
+    matched_query_indices: list[int] = field(default_factory=list)
+    retrieval_routes: list[str] = field(default_factory=list)
     keyword_overlap: float = 0.0
     concept_overlap: float = 0.0
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from time import perf_counter
 from typing import Any, Iterable
 
 from langchain_core.documents import Document
@@ -18,12 +19,108 @@ from rag.legal_reference_normalizer import (
 from rag.lexical_retriever import (
     LexicalIndex,
 )
+from rag.retrieval_errors import (
+    MandatoryRetrievalError,
+    OptionalRetrievalError,
+    RetrievalError,
+)
 from rag.schemas import CandidateDocument, LegalReference
 
 
 METADATA_PREFIX = "metadata"
 EXACT_PROVISION_SCROLL_LIMIT = 128
 logger = logging.getLogger(__name__)
+
+
+def _get_collection_name(retriever: Any) -> str | None:
+    """Return the backing collection name if the retriever exposes one."""
+
+    vector_store = getattr(
+        retriever,
+        "vector_store",
+        None,
+    )
+
+    if vector_store is None:
+        return getattr(
+            retriever,
+            "collection_name",
+            None,
+        )
+
+    return getattr(
+        vector_store,
+        "collection_name",
+        getattr(
+            retriever,
+            "collection_name",
+            None,
+        ),
+    )
+
+
+def _raise_mandatory_retrieval_error(
+    *,
+    operation: str,
+    route: str,
+    collection: str | None,
+    original_exception: Exception,
+    elapsed_seconds: float | None = None,
+) -> None:
+    """Log and raise a mandatory retrieval failure."""
+
+    logger.exception(
+        (
+            "%s failed for route=%s collection=%s "
+            "after %.3fs"
+        ),
+        operation,
+        route,
+        collection or "unknown",
+        elapsed_seconds or 0.0,
+    )
+
+    raise MandatoryRetrievalError(
+        f"{operation} failed.",
+        operation=operation,
+        route=route,
+        collection=collection,
+        category=type(original_exception).__name__,
+        original_exception=original_exception,
+    ) from original_exception
+
+
+def _raise_optional_retrieval_error(
+    *,
+    operation: str,
+    route: str,
+    collection: str | None,
+    original_exception: Exception,
+    elapsed_seconds: float | None = None,
+) -> None:
+    """Log and raise a supporting retrieval failure."""
+
+    logger.warning(
+        (
+            "%s failed for route=%s collection=%s "
+            "after %.3fs (%s)"
+        ),
+        operation,
+        route,
+        collection or "unknown",
+        elapsed_seconds or 0.0,
+        type(original_exception).__name__,
+        exc_info=True,
+    )
+
+    raise OptionalRetrievalError(
+        f"{operation} failed.",
+        operation=operation,
+        route=route,
+        collection=collection,
+        category=type(original_exception).__name__,
+        original_exception=original_exception,
+    ) from original_exception
 
 def normalize_provision_number(
     value: str | int | None,
@@ -451,6 +548,100 @@ def build_provision_filter(
         normalize_string_list(
             document_ids
         )
+    )
+
+    if normalized_document_ids:
+        conditions.append(
+            FieldCondition(
+                key=f"{METADATA_PREFIX}.document_id",
+                match=MatchAny(
+                    any=normalized_document_ids
+                ),
+            )
+        )
+
+    return Filter(
+        must=conditions
+    )
+
+
+def get_document_provision_ordinal(
+    document: Document,
+) -> int | None:
+    """Return the stored source-order provision ordinal, if present."""
+
+    raw_value = document.metadata.get(
+        "provision_ordinal"
+    )
+
+    try:
+        ordinal = int(raw_value)
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return None
+
+    return ordinal if ordinal > 0 else None
+
+
+def build_provision_ordinal_filter(
+    provision_ordinals: list[int],
+    provision_type: str | None = None,
+    document_ids: list[str] | None = None,
+) -> Filter:
+    """Build a source-order provision filter keyed by ordinal."""
+
+    normalized_ordinals = [
+        ordinal
+        for ordinal in (
+            int(value)
+            for value in provision_ordinals
+        )
+        if ordinal > 0
+    ]
+
+    if not normalized_ordinals:
+        raise ValueError(
+            "provision_ordinals cannot be empty."
+        )
+
+    conditions: list[FieldCondition] = [
+        FieldCondition(
+            key=f"{METADATA_PREFIX}.provision_ordinal",
+            match=MatchAny(
+                any=normalized_ordinals
+            ),
+        ),
+        FieldCondition(
+            key=(
+                f"{METADATA_PREFIX}."
+                "heading_only_chunk"
+            ),
+            match=MatchValue(
+                value=False
+            ),
+        ),
+    ]
+
+    normalized_type = (
+        str(provision_type).strip().lower()
+        if provision_type
+        else None
+    )
+
+    if normalized_type:
+        conditions.append(
+            FieldCondition(
+                key=f"{METADATA_PREFIX}.provision_type",
+                match=MatchValue(
+                    value=normalized_type
+                ),
+            )
+        )
+
+    normalized_document_ids = normalize_string_list(
+        document_ids
     )
 
     if normalized_document_ids:
@@ -957,6 +1148,19 @@ class AdaptiveRetriever:
     ) -> None:
         self.vector_store = vector_store
         self._lexical_index: LexicalIndex | None = None
+        self.supports_similarity_search_with_score = callable(
+            getattr(
+                vector_store,
+                "similarity_search_with_score",
+                None,
+            )
+        )
+
+        if not self.supports_similarity_search_with_score:
+            logger.warning(
+                "Vector store does not expose similarity_search_with_score; "
+                "score-aware fallback will return None scores."
+            )
 
     def invoke(
         self,
@@ -980,7 +1184,7 @@ class AdaptiveRetriever:
         query: str,
         k: int,
         metadata_filter: Filter | None = None,
-    ) -> list[tuple[Document, float]]:
+    ) -> list[tuple[Document, float | None]]:
         """Run retrieval and preserve Qdrant cosine similarity scores."""
 
         if not query.strip():
@@ -1009,6 +1213,10 @@ class AdaptiveRetriever:
             AttributeError,
             TypeError,
         ):
+            logger.warning(
+                "Vector score retrieval unavailable; falling back to "
+                "rank-preserving unscored retrieval."
+            )
             documents = self.invoke(
                 query=query,
                 k=k,
@@ -1018,7 +1226,7 @@ class AdaptiveRetriever:
             return [
                 (
                     document,
-                    0.0,
+                    None,
                 )
                 for document in documents
             ]
@@ -1321,47 +1529,69 @@ def retrieve_exact_provision_documents(
     if not normalized_numbers:
         return []
 
-    filters: list[Filter] = [
-        build_provision_filter(
-            provision_numbers=normalized_numbers,
-            provision_type=provision_type,
-            document_ids=document_ids,
-        )
-    ]
+    normalized_document_ids = normalize_string_list(
+        document_ids
+    )
+    collection_name = _get_collection_name(
+        retriever
+    )
+    route = (
+        "provision:"
+        f"type={provision_type or 'any'};"
+        f"numbers={','.join(normalized_numbers)};"
+        f"document_ids={','.join(normalized_document_ids) or 'any'}"
+    )
 
-    if provision_type == "article":
-        filters.append(
-            build_articles_filter(
-                article_numbers=normalized_numbers,
+    try:
+        filters: list[Filter] = [
+            build_provision_filter(
+                provision_numbers=normalized_numbers,
+                provision_type=provision_type,
                 document_ids=document_ids,
             )
-        )
+        ]
 
-    elif provision_type == "section":
-        filters.append(
-            build_sections_filter(
-                section_numbers=normalized_numbers,
-                document_ids=document_ids,
+        if provision_type == "article":
+            filters.append(
+                build_articles_filter(
+                    article_numbers=normalized_numbers,
+                    document_ids=document_ids,
+                )
             )
-        )
 
-    else:
-        filters.append(
-            build_sections_filter(
-                section_numbers=normalized_numbers,
-                document_ids=document_ids,
+        elif provision_type == "section":
+            filters.append(
+                build_sections_filter(
+                    section_numbers=normalized_numbers,
+                    document_ids=document_ids,
+                )
             )
-        )
-        filters.append(
-            build_articles_filter(
-                article_numbers=normalized_numbers,
-                document_ids=document_ids,
+
+        else:
+            filters.append(
+                build_sections_filter(
+                    section_numbers=normalized_numbers,
+                    document_ids=document_ids,
+                )
             )
+            filters.append(
+                build_articles_filter(
+                    article_numbers=normalized_numbers,
+                    document_ids=document_ids,
+                )
+            )
+    except Exception as exc:
+        _raise_mandatory_retrieval_error(
+            operation="build_exact_provision_filter",
+            route=route,
+            collection=collection_name,
+            original_exception=exc,
         )
 
     exact_documents: list[Document] = []
 
     for metadata_filter in filters:
+        started_at = perf_counter()
         try:
             results = (
                 retriever.scroll_documents(
@@ -1371,7 +1601,7 @@ def retrieve_exact_provision_documents(
                     ),
                 )
             )
-        except AttributeError:
+        except AttributeError as exc:
             try:
                 scored_results = (
                     retriever.search_with_scores(
@@ -1389,10 +1619,26 @@ def retrieve_exact_provision_documents(
                     for document, _score
                     in scored_results
                 ]
-            except Exception:
-                continue
-        except Exception:
-            continue
+            except Exception as search_exc:
+                _raise_mandatory_retrieval_error(
+                    operation="search_exact_provision_fallback",
+                    route=route,
+                    collection=collection_name,
+                    original_exception=search_exc,
+                    elapsed_seconds=(
+                        perf_counter() - started_at
+                    ),
+                )
+        except Exception as exc:
+            _raise_mandatory_retrieval_error(
+                operation="scroll_exact_provision",
+                route=route,
+                collection=collection_name,
+                original_exception=exc,
+                elapsed_seconds=(
+                    perf_counter() - started_at
+                ),
+            )
 
         matching_documents = [
             document
@@ -1534,17 +1780,27 @@ def retrieve_exact_legal_reference_documents(
     """Fetch exact child references with deterministic parent fallback."""
 
     exact_documents: list[Document] = []
+    collection_name = _get_collection_name(
+        retriever
+    )
 
     for reference in legal_references:
         if normalize_legal_reference_path(
             reference.subsection_path
         ):
-            child_filter = build_child_provision_filter(
-                reference=reference,
-                document_ids=document_ids,
+            route = (
+                "child:"
+                f"type={reference.provision_type};"
+                f"base={normalize_provision_number(reference.base_number) or reference.base_number};"
+                f"path={get_legal_reference_subsection_path_key(reference.subsection_path)};"
+                f"document_ids={','.join(normalize_string_list(document_ids)) or 'any'}"
             )
-
             try:
+                child_filter = build_child_provision_filter(
+                    reference=reference,
+                    document_ids=document_ids,
+                )
+                started_at = perf_counter()
                 child_results = (
                     retriever.scroll_documents(
                         metadata_filter=child_filter,
@@ -1553,8 +1809,18 @@ def retrieve_exact_legal_reference_documents(
                         ),
                     )
                 )
-            except Exception:
-                child_results = []
+            except Exception as exc:
+                _raise_mandatory_retrieval_error(
+                    operation="scroll_exact_child",
+                    route=route,
+                    collection=collection_name,
+                    original_exception=exc,
+                    elapsed_seconds=(
+                        perf_counter() - started_at
+                        if "started_at" in locals()
+                        else None
+                    ),
+                )
 
             matching_children = [
                 document
@@ -1651,7 +1917,7 @@ def retrieve_neighbor_documents(
     enabled: bool,
     document_ids: list[str] | None = None,
     provision_type: str = "section",
-) -> list[tuple[Document, float]]:
+) -> list[tuple[Document, float | None]]:
     """
     Retrieve nearby Sections or Articles from the same routed document.
     """
@@ -1659,32 +1925,339 @@ def retrieve_neighbor_documents(
     if not enabled:
         return []
 
-    neighboring_numbers = (
-        build_neighbor_provision_numbers(
-            provision_number=section_number,
-            radius=radius,
+    normalized_provision_number = (
+        normalize_provision_number(
+            section_number
         )
     )
 
-    if len(neighboring_numbers) <= 1:
+    if not normalized_provision_number:
         return []
 
+    normalized_document_ids = normalize_string_list(
+        document_ids
+    )
+    collection_name = _get_collection_name(
+        retriever
+    )
+    base_route = (
+        "neighbor:"
+        f"type={str(provision_type).strip().lower() or 'any'};"
+        f"number={normalized_provision_number};"
+        f"radius={radius};"
+        f"document_ids={','.join(normalized_document_ids) or 'any'}"
+    )
+
     try:
-        return retriever.search_with_scores(
-            query=question,
-            k=max(
-                len(neighboring_numbers) * 2,
-                top_k,
-            ),
+        started_at = perf_counter()
+        probe_documents = retriever.scroll_documents(
             metadata_filter=build_provision_filter(
-                provision_numbers=neighboring_numbers,
+                provision_numbers=[
+                    normalized_provision_number
+                ],
                 provision_type=provision_type,
                 document_ids=document_ids,
             ),
+            page_size=EXACT_PROVISION_SCROLL_LIMIT,
+        )
+    except Exception as exc:
+        _raise_optional_retrieval_error(
+            operation="probe_neighbor_provision",
+            route=base_route,
+            collection=collection_name,
+            original_exception=exc,
+            elapsed_seconds=(
+                perf_counter() - started_at
+                if "started_at" in locals()
+                else None
+            ),
         )
 
-    except Exception:
+    if not probe_documents:
+        numeric_target = parse_numeric_provision(
+            normalized_provision_number
+        )
+
+        if (
+            numeric_target is None
+            or radius <= 0
+            or not normalized_document_ids
+        ):
+            return []
+
+        neighboring_numbers = (
+            build_neighbor_provision_numbers(
+                provision_number=normalized_provision_number,
+                radius=radius,
+            )
+        )
+
+        if len(neighboring_numbers) <= 1:
+            return []
+
+        try:
+            started_at = perf_counter()
+            return retriever.search_with_scores(
+                query=question,
+                k=max(
+                    len(neighboring_numbers) * 2,
+                    top_k,
+                ),
+                metadata_filter=build_provision_filter(
+                    provision_numbers=neighboring_numbers,
+                    provision_type=provision_type,
+                    document_ids=normalized_document_ids,
+                ),
+            )
+        except Exception as exc:
+            _raise_optional_retrieval_error(
+                operation="search_neighbor_documents",
+                route=base_route,
+                collection=collection_name,
+                original_exception=exc,
+                elapsed_seconds=(
+                    perf_counter() - started_at
+                    if "started_at" in locals()
+                    else None
+                ),
+            )
+
+    grouped_by_document_id: dict[str, list[Document]] = {}
+
+    for document in probe_documents:
+        if not is_usable_document(document):
+            continue
+
+        document_id = get_document_id(document)
+
+        if (
+            normalized_document_ids
+            and document_id not in normalized_document_ids
+        ):
+            continue
+
+        grouped_by_document_id.setdefault(
+            document_id,
+            [],
+        ).append(document)
+
+    if not grouped_by_document_id:
         return []
+
+    ordered_results: list[tuple[Document, float | None]] = []
+
+    for document_id, documents in grouped_by_document_id.items():
+        ordinals = sorted(
+            {
+                ordinal
+                for ordinal in (
+                    get_document_provision_ordinal(
+                        document
+                    )
+                    for document in documents
+                )
+                if ordinal is not None
+            }
+        )
+
+        if ordinals:
+            target_ordinal = ordinals[0]
+
+            if len(ordinals) != 1:
+                _raise_optional_retrieval_error(
+                    operation="resolve_neighbor_ordinal",
+                    route=(
+                        f"{base_route};document_id={document_id}"
+                    ),
+                    collection=collection_name,
+                    original_exception=ValueError(
+                        "inconsistent provision ordinals"
+                    ),
+                )
+
+            if radius <= 0:
+                continue
+
+            neighbor_ordinals = list(
+                range(
+                    max(
+                        1,
+                        target_ordinal - radius,
+                    ),
+                    target_ordinal + radius + 1,
+                )
+            )
+
+            try:
+                started_at = perf_counter()
+                scored_neighbors = (
+                    retriever.search_with_scores(
+                        query=question,
+                        k=max(
+                            len(neighbor_ordinals) * 2,
+                            top_k,
+                        ),
+                        metadata_filter=build_provision_ordinal_filter(
+                            provision_ordinals=neighbor_ordinals,
+                            provision_type=provision_type,
+                            document_ids=[document_id],
+                        ),
+                    )
+                )
+            except Exception as exc:
+                _raise_optional_retrieval_error(
+                    operation="search_neighbor_documents",
+                    route=(
+                        f"{base_route};document_id={document_id};"
+                        f"ordinal={target_ordinal}"
+                    ),
+                    collection=collection_name,
+                    original_exception=exc,
+                    elapsed_seconds=(
+                        perf_counter() - started_at
+                        if "started_at" in locals()
+                        else None
+                    ),
+                )
+
+            filtered_neighbors: list[tuple[Document, float | None]] = []
+            seen_identities: set[str] = set()
+
+            for document, relevance_score in scored_neighbors:
+                if not is_usable_document(document):
+                    continue
+
+                if get_document_id(document) != document_id:
+                    continue
+
+                document_ordinal = (
+                    get_document_provision_ordinal(
+                        document
+                    )
+                )
+
+                if document_ordinal not in neighbor_ordinals:
+                    continue
+
+                document_identity = get_document_identity(
+                    document
+                )
+
+                if document_identity in seen_identities:
+                    continue
+
+                seen_identities.add(document_identity)
+                filtered_neighbors.append(
+                    (
+                        document,
+                        relevance_score,
+                    )
+                )
+
+            filtered_neighbors.sort(
+                key=lambda item: (
+                    get_document_provision_ordinal(
+                        item[0]
+                    )
+                    or 0,
+                    get_document_order_key(
+                        item[0]
+                    ),
+                )
+            )
+            ordered_results.extend(
+                filtered_neighbors
+            )
+            continue
+
+        numeric_target = parse_numeric_provision(
+            normalized_provision_number
+        )
+
+        if numeric_target is None or radius <= 0:
+            continue
+
+        neighboring_numbers = (
+            build_neighbor_provision_numbers(
+                provision_number=normalized_provision_number,
+                radius=radius,
+            )
+        )
+
+        if len(neighboring_numbers) <= 1:
+            continue
+
+        try:
+            started_at = perf_counter()
+            scored_neighbors = retriever.search_with_scores(
+                query=question,
+                k=max(
+                    len(neighboring_numbers) * 2,
+                    top_k,
+                ),
+                metadata_filter=build_provision_filter(
+                    provision_numbers=neighboring_numbers,
+                    provision_type=provision_type,
+                    document_ids=[document_id],
+                ),
+            )
+        except Exception as exc:
+            _raise_optional_retrieval_error(
+                operation="search_neighbor_documents",
+                route=(
+                    f"{base_route};document_id={document_id}"
+                ),
+                collection=collection_name,
+                original_exception=exc,
+                elapsed_seconds=(
+                    perf_counter() - started_at
+                    if "started_at" in locals()
+                    else None
+                ),
+            )
+
+        filtered_neighbors = []
+        seen_identities = set()
+
+        for document, relevance_score in scored_neighbors:
+            if not is_usable_document(document):
+                continue
+
+            if get_document_id(document) != document_id:
+                continue
+
+            document_number = get_document_provision_number(
+                document
+            )
+
+            if document_number not in neighboring_numbers:
+                continue
+
+            document_identity = get_document_identity(
+                document
+            )
+
+            if document_identity in seen_identities:
+                continue
+
+            seen_identities.add(document_identity)
+            filtered_neighbors.append(
+                (
+                    document,
+                    relevance_score,
+                )
+            )
+
+        filtered_neighbors.sort(
+            key=lambda item: get_document_order_key(
+                item[0]
+            )
+        )
+        ordered_results.extend(
+            filtered_neighbors
+        )
+
+    return ordered_results
 
 def get_concept_preferred_sections(
     detected_concepts: list[str],
@@ -1733,6 +2306,70 @@ def get_concept_document_ids(
     )
 
 
+def _resolve_concept_neighbor_document_ids(
+    *,
+    concept_name: str,
+    normalized_document_ids: list[str],
+) -> list[str] | None:
+    """Resolve the document scope for one concept-specific neighbor route."""
+
+    concept_document_ids = (
+        get_concept_document_ids(
+            concept_name
+        )
+    )
+
+    if normalized_document_ids:
+        if concept_document_ids:
+            compatible_document_ids = [
+                document_id
+                for document_id in normalized_document_ids
+                if document_id in concept_document_ids
+            ]
+
+            return (
+                compatible_document_ids
+                or None
+            )
+
+        return normalized_document_ids
+
+    if concept_document_ids:
+        return concept_document_ids
+
+    return None
+
+
+def _neighbor_route_key(
+    *,
+    document_ids: list[str] | None,
+    provision_type: str,
+    preferred_provision_number: str,
+) -> tuple[Any, ...]:
+    """Build a stable identity for a concept neighbor route."""
+
+    normalized_document_ids = (
+        tuple(
+            sorted(
+                normalize_string_list(
+                    document_ids
+                )
+            )
+        )
+        if document_ids
+        else None
+    )
+
+    return (
+        normalized_document_ids,
+        provision_type.strip().lower(),
+        normalize_provision_number(
+            preferred_provision_number
+        )
+        or str(preferred_provision_number).strip(),
+    )
+
+
 def fetch_candidates(
     retriever: AdaptiveRetriever,
     question: str,
@@ -1749,6 +2386,8 @@ def fetch_candidates(
     provision_numbers: list[str] | None = None,
     article_number: str | None = None,
     legal_references: list[LegalReference] | None = None,
+    retrieval_issues: list[RetrievalError] | None = None,
+    retrieval_trace: dict[str, Any] | None = None,
 ) -> tuple[
     list[CandidateDocument],
     list[Document],
@@ -1837,49 +2476,161 @@ def fetch_candidates(
         CandidateDocument
     ] = []
     exact_documents: list[Document] = []
+    trace_events = (
+        retrieval_trace.setdefault(
+            "events",
+            [],
+        )
+        if retrieval_trace is not None
+        else None
+    )
+
+    def record_event(
+        *,
+        channel: str,
+        route_id: str,
+        started_at: float,
+        status: str,
+        accepted_count: int = 0,
+        raw_count: int = 0,
+        query_index: int | None = None,
+        query_text: str | None = None,
+        document_ids: list[str] | None = None,
+        provision_type: str | None = None,
+        preferred_provision_number: str | None = None,
+        concept_name: str | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        if trace_events is None:
+            return
+
+        event: dict[str, Any] = {
+            "channel": channel,
+            "route_id": route_id,
+            "status": status,
+            "latency_ms": (perf_counter() - started_at) * 1000.0,
+            "accepted_count": accepted_count,
+            "raw_count": raw_count,
+        }
+
+        if query_index is not None:
+            event["query_index"] = query_index
+
+        if query_text is not None:
+            event["query_text"] = query_text
+
+        if document_ids is not None:
+            event["document_ids"] = document_ids
+
+        if provision_type is not None:
+            event["provision_type"] = provision_type
+
+        if preferred_provision_number is not None:
+            event["preferred_provision_number"] = preferred_provision_number
+
+        if concept_name is not None:
+            event["concept_name"] = concept_name
+
+        if error is not None:
+            event["error_type"] = type(error).__name__
+            event["error_message"] = str(error)
+
+        trace_events.append(event)
 
     normalized_legal_references = list(
         legal_references or []
     )
 
     if normalized_legal_references:
-        exact_documents = (
-            retrieve_exact_legal_reference_documents(
-                retriever=retriever,
-                question=question,
-                legal_references=(
-                    normalized_legal_references
-                ),
-                document_ids=(
-                    normalized_document_ids
-                ),
-                top_k=top_k,
+        exact_started = perf_counter()
+        try:
+            exact_documents = (
+                retrieve_exact_legal_reference_documents(
+                    retriever=retriever,
+                    question=question,
+                    legal_references=(
+                        normalized_legal_references
+                    ),
+                    document_ids=(
+                        normalized_document_ids
+                    ),
+                    top_k=top_k,
+                )
             )
+        except MandatoryRetrievalError as exc:
+            record_event(
+                channel="exact",
+                route_id="exact:legal_references",
+                started_at=exact_started,
+                status="error",
+                accepted_count=0,
+                raw_count=0,
+                error=exc,
+            )
+            raise
+        record_event(
+            channel="exact",
+            route_id="exact:legal_references",
+            started_at=exact_started,
+            status="success",
+            accepted_count=len(exact_documents),
+            raw_count=len(exact_documents),
         )
 
     elif explicit_provision_numbers:
-        exact_results = (
-            retrieve_exact_provision_documents(
-                retriever=retriever,
-                question=question,
-                provision_numbers=(
-                    explicit_provision_numbers
-                ),
-                provision_type=(
-                    effective_provision_type
-                ),
-                document_ids=(
-                    normalized_document_ids
-                ),
-                top_k=top_k,
+        exact_started = perf_counter()
+        try:
+            exact_results = (
+                retrieve_exact_provision_documents(
+                    retriever=retriever,
+                    question=question,
+                    provision_numbers=(
+                        explicit_provision_numbers
+                    ),
+                    provision_type=(
+                        effective_provision_type
+                    ),
+                    document_ids=(
+                        normalized_document_ids
+                    ),
+                    top_k=top_k,
+                )
             )
-        )
+        except MandatoryRetrievalError as exc:
+            record_event(
+                channel="exact",
+                route_id=(
+                    "exact:"
+                    f"{effective_provision_type or 'provision'}"
+                ),
+                started_at=exact_started,
+                status="error",
+                accepted_count=0,
+                raw_count=0,
+                document_ids=normalized_document_ids,
+                provision_type=effective_provision_type,
+                error=exc,
+            )
+            raise
 
         exact_documents = [
             document
             for document, _score
             in exact_results
         ]
+        record_event(
+            channel="exact",
+            route_id=(
+                "exact:"
+                f"{effective_provision_type or 'provision'}"
+            ),
+            started_at=exact_started,
+            status="success",
+            accepted_count=len(exact_documents),
+            raw_count=len(exact_results),
+            document_ids=normalized_document_ids,
+            provision_type=effective_provision_type,
+        )
 
     semantic_filter = (
         build_document_filter(
@@ -1892,6 +2643,8 @@ def fetch_candidates(
     for query_index, query in enumerate(
         queries
     ):
+        vector_started = perf_counter()
+        vector_accepted = 0
         scored_documents = (
             retriever.search_with_scores(
                 query=query,
@@ -1900,10 +2653,13 @@ def fetch_candidates(
             )
         )
 
-        for (
+        for retrieval_rank, (
             document,
             relevance_score,
-        ) in scored_documents:
+        ) in enumerate(
+            scored_documents,
+            start=1,
+        ):
             if not is_usable_document(
                 document
             ):
@@ -1911,22 +2667,22 @@ def fetch_candidates(
 
             if (
                 min_relevance_score > 0
-                and relevance_score
-                < min_relevance_score
+                and relevance_score is not None
+                and relevance_score < min_relevance_score
             ):
                 continue
 
             candidate_items.append(
                 CandidateDocument(
                     document=document,
-                    relevance_score=float(
-                        relevance_score
-                    ),
+                    relevance_score=relevance_score,
                     query_index=query_index,
                     query_text=query,
                     retrieval_method="vector",
+                    retrieval_rank=retrieval_rank,
                 )
             )
+            vector_accepted += 1
 
         lexical_search = getattr(
             retriever,
@@ -1934,6 +2690,8 @@ def fetch_candidates(
             None,
         )
 
+        lexical_started = perf_counter()
+        lexical_accepted = 0
         if callable(lexical_search):
             lexical_documents = lexical_search(
                 query=query,
@@ -1961,56 +2719,123 @@ def fetch_candidates(
                     retrieval_method="lexical",
                 )
             )
+            lexical_accepted += 1
 
-    preferred_sections = (
-        get_concept_preferred_sections(
-            detected_concepts
+        record_event(
+            channel="vector",
+            route_id=f"vector:{query_index}:{query}",
+            started_at=vector_started,
+            status="success",
+            accepted_count=vector_accepted,
+            raw_count=len(scored_documents),
+            query_index=query_index,
+            query_text=query,
+            document_ids=normalized_document_ids,
         )
-    )
+
+        record_event(
+            channel="lexical",
+            route_id=f"lexical:{query_index}:{query}",
+            started_at=lexical_started,
+            status="success",
+            accepted_count=lexical_accepted,
+            raw_count=len(lexical_documents),
+            query_index=query_index,
+            query_text=query,
+            document_ids=normalized_document_ids,
+        )
+
+    seen_neighbor_routes: set[tuple[Any, ...]] = set()
 
     for concept_name in detected_concepts:
-        concept_document_ids = (
-            get_concept_document_ids(
-                concept_name
+        concept_sections = sorted(
+            get_concept_preferred_sections(
+                [concept_name]
             )
         )
 
-        if normalized_document_ids:
-            neighbor_document_ids = (
-                normalized_document_ids
-            )
+        if not concept_sections:
+            continue
 
-        else:
-            neighbor_document_ids = (
-                concept_document_ids
+        neighbor_document_ids = (
+            _resolve_concept_neighbor_document_ids(
+                concept_name=concept_name,
+                normalized_document_ids=(
+                    normalized_document_ids
+                ),
             )
+        )
 
-        for preferred_section in sorted(
-            preferred_sections
+        if (
+            normalized_document_ids
+            and neighbor_document_ids is None
         ):
-            neighbor_results = (
-                retrieve_neighbor_documents(
-                    retriever=retriever,
-                    section_number=(
-                        preferred_section
-                    ),
-                    question=question,
-                    radius=neighbor_radius,
-                    top_k=top_k,
-                    enabled=(
-                        enable_neighbor_retrieval
-                    ),
-                    document_ids=(
-                        neighbor_document_ids
-                    ),
-                    provision_type="section",
-                )
+            continue
+
+        for preferred_section in concept_sections:
+            route_key = _neighbor_route_key(
+                document_ids=neighbor_document_ids,
+                provision_type="section",
+                preferred_provision_number=(
+                    preferred_section
+                ),
             )
 
-            for (
+            if route_key in seen_neighbor_routes:
+                continue
+
+            seen_neighbor_routes.add(
+                route_key
+            )
+
+            neighbor_started = perf_counter()
+            neighbor_accepted = 0
+            try:
+                neighbor_results = (
+                    retrieve_neighbor_documents(
+                        retriever=retriever,
+                        section_number=(
+                            preferred_section
+                        ),
+                        question=question,
+                        radius=neighbor_radius,
+                        top_k=top_k,
+                        enabled=(
+                            enable_neighbor_retrieval
+                        ),
+                        document_ids=neighbor_document_ids,
+                        provision_type="section",
+                    )
+                )
+            except OptionalRetrievalError as exc:
+                if retrieval_issues is not None:
+                    retrieval_issues.append(exc)
+                record_event(
+                    channel="neighbor",
+                    route_id=(
+                        "neighbor:"
+                        f"{neighbor_document_ids or 'all'}:"
+                        f"section:{preferred_section}"
+                    ),
+                    started_at=neighbor_started,
+                    status="error",
+                    accepted_count=0,
+                    raw_count=0,
+                    document_ids=neighbor_document_ids,
+                    provision_type="section",
+                    preferred_provision_number=preferred_section,
+                    concept_name=concept_name,
+                    error=exc,
+                )
+                continue
+
+            for retrieval_rank, (
                 document,
                 relevance_score,
-            ) in neighbor_results:
+            ) in enumerate(
+                neighbor_results,
+                start=1,
+            ):
                 if not is_usable_document(
                     document
                 ):
@@ -2018,17 +2843,15 @@ def fetch_candidates(
 
                 if (
                     min_relevance_score > 0
-                    and relevance_score
-                    < min_relevance_score
+                    and relevance_score is not None
+                    and relevance_score < min_relevance_score
                 ):
                     continue
 
                 candidate_items.append(
                     CandidateDocument(
                         document=document,
-                        relevance_score=float(
-                            relevance_score
-                        ),
+                        relevance_score=relevance_score,
                         query_index=len(
                             queries
                         ),
@@ -2036,8 +2859,28 @@ def fetch_candidates(
                             "neighbor:"
                             f"{preferred_section}"
                         ),
+                        retrieval_method="neighbor",
+                        retrieval_rank=retrieval_rank,
                     )
                 )
+                neighbor_accepted += 1
+
+            record_event(
+                channel="neighbor",
+                route_id=(
+                    "neighbor:"
+                    f"{neighbor_document_ids or 'all'}:"
+                    f"section:{preferred_section}"
+                ),
+                started_at=neighbor_started,
+                status="success",
+                accepted_count=neighbor_accepted,
+                raw_count=len(neighbor_results),
+                document_ids=neighbor_document_ids,
+                provision_type="section",
+                preferred_provision_number=preferred_section,
+                concept_name=concept_name,
+            )
 
     return (
         candidate_items,

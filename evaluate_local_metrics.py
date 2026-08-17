@@ -6,7 +6,7 @@ import json
 import math
 import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -42,12 +42,14 @@ class LocalSample:
     sample_id: str
     sample_key: str
     raw_id: str
+    dataset_version: str | None
     category: str
     question: str
     reference: str
     expected_document_id: str | None
     expected_provision_type: str | None
     expected_provision_numbers: list[str]
+    expected_supporting_ids: list[str] = field(default_factory=list)
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -95,6 +97,76 @@ def _expected_provision_numbers_from_row(row: dict[str, Any]) -> list[str]:
         return numbers
 
     return []
+
+
+def _parse_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+
+    if isinstance(value, list):
+        items = value
+    elif isinstance(value, str) and "|" in value:
+        items = [part.strip() for part in value.split("|")]
+    elif isinstance(value, str) and "," in value:
+        items = [part.strip() for part in value.split(",")]
+    else:
+        items = [value]
+
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = str(item).strip()
+        if text and text not in seen:
+            seen.add(text)
+            cleaned.append(text)
+
+    return cleaned
+
+
+def _parse_expected_supporting_ids(row: dict[str, Any]) -> list[str]:
+    values = (
+        row.get("expected_supporting_ids")
+        or row.get("expected_supporting_provision_ids")
+        or row.get("expected_supporting_chunk_ids")
+    )
+    return _parse_string_list(values)
+
+
+def _normalize_supporting_id(
+    document_id: str | None,
+    provision_type: str | None,
+    provision_number: str | None,
+) -> str | None:
+    if not document_id or not provision_type or not provision_number:
+        return None
+
+    return "::".join(
+        [
+            str(document_id).strip().lower(),
+            str(provision_type).strip().lower(),
+            str(provision_number).strip().upper(),
+        ]
+    )
+
+
+def _supporting_ids_from_sample(sample: "LocalSample") -> set[str]:
+    if sample.expected_supporting_ids:
+        return {
+            str(item).strip()
+            for item in sample.expected_supporting_ids
+            if str(item).strip()
+        }
+
+    normalized: set[str] = set()
+    for number in sample.expected_provision_numbers:
+        support_id = _normalize_supporting_id(
+            sample.expected_document_id,
+            sample.expected_provision_type,
+            number,
+        )
+        if support_id:
+            normalized.add(support_id)
+    return normalized
 
 
 def _first_str_value(row: dict[str, Any], keys: list[str]) -> str:
@@ -147,6 +219,11 @@ def _load_samples(path: Path) -> list[LocalSample]:
                 sample_id=sample_id,
                 sample_key=sample_key,
                 raw_id=raw_id,
+                dataset_version=(
+                    str(row.get("dataset_version")).strip()
+                    if row.get("dataset_version") is not None
+                    else None
+                ),
                 category=str(row.get("category") or "").strip(),
                 question=str(row.get("question") or "").strip(),
                 reference=str(row.get("reference") or "").strip(),
@@ -161,6 +238,7 @@ def _load_samples(path: Path) -> list[LocalSample]:
                     else None
                 ),
                 expected_provision_numbers=_expected_provision_numbers_from_row(row),
+                expected_supporting_ids=_parse_expected_supporting_ids(row),
             )
         )
 
@@ -285,6 +363,140 @@ def _get_generated_response(prediction: dict[str, Any]) -> str:
         or prediction.get("generated_answer")
         or ""
     ).strip()
+
+
+def _extract_retrieval_trace(
+    prediction: dict[str, Any],
+) -> dict[str, Any] | None:
+    trace = prediction.get("retrieval_trace")
+
+    if isinstance(trace, str):
+        trace = trace.strip()
+        if not trace:
+            return None
+        try:
+            loaded = json.loads(trace)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(loaded, dict):
+            return loaded
+        return None
+
+    if isinstance(trace, dict):
+        return trace
+
+    return None
+
+
+def _trace_context_provision_identity(context: dict[str, Any]) -> str:
+    provision_identity = str(
+        context.get("provision_identity") or ""
+    ).strip()
+    if provision_identity:
+        return provision_identity
+
+    provision_identity = _normalize_supporting_id(
+        str(context.get("document_id") or "").strip(),
+        str(context.get("provision_type") or "").strip(),
+        str(context.get("provision_number") or "").strip(),
+    )
+    if provision_identity:
+        return provision_identity
+
+    return str(context.get("text") or "").strip()
+
+
+def _trace_context_chunk_identity(context: dict[str, Any]) -> str:
+    chunk_id = str(context.get("chunk_id") or "").strip()
+    if chunk_id:
+        return chunk_id
+
+    return _trace_context_provision_identity(context)
+
+
+def _trace_context_support_unit(context: dict[str, Any]) -> str:
+    provision_identity = str(
+        context.get("provision_identity") or ""
+    ).strip()
+    if provision_identity:
+        return provision_identity
+
+    chunk_id = str(context.get("chunk_id") or "").strip()
+    if chunk_id:
+        return chunk_id
+
+    return ""
+
+
+def _parsed_context_identity(context: dict[str, str]) -> str:
+    provision_identity = _normalize_supporting_id(
+        context.get("document_id"),
+        context.get("provision_type"),
+        context.get("provision_number"),
+    )
+    if provision_identity:
+        return provision_identity
+
+    return str(context.get("text") or "").strip()
+
+
+def _trace_contexts(
+    prediction: dict[str, Any],
+    trace: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if trace is not None:
+        retrieval = trace.get("retrieval")
+        if isinstance(retrieval, dict):
+            selected_contexts = retrieval.get("selected_contexts")
+            if isinstance(selected_contexts, list):
+                contexts: list[dict[str, Any]] = []
+                for context in selected_contexts:
+                    if isinstance(context, dict):
+                        contexts.append(context)
+                if contexts:
+                    return contexts
+
+    parsed = _flatten_contexts(prediction.get("retrieved_contexts", []))
+    return [
+        {
+            **context,
+            "provision_identity": _parsed_context_identity(context),
+            "chunk_id": _parsed_context_identity(context),
+        }
+        for context in parsed
+    ]
+
+
+def _source_identity(source: dict[str, Any]) -> str:
+    chunk_id = str(source.get("chunk_id") or "").strip()
+    if chunk_id:
+        return chunk_id
+
+    return _normalize_supporting_id(
+        str(source.get("document_id") or "").strip(),
+        str(source.get("provision_type") or "").strip(),
+        str(source.get("provision_number") or "").strip(),
+    ) or ""
+
+
+def _unique_support_units(contexts: list[dict[str, Any]]) -> list[str]:
+    seen: set[str] = set()
+    support_units: list[str] = []
+
+    for context in contexts:
+        support_unit = _trace_context_support_unit(context)
+        if support_unit and support_unit not in seen:
+            seen.add(support_unit)
+            support_units.append(support_unit)
+
+    return support_units
+
+
+def _safe_percentile(values: list[float], percentile: float) -> float | None:
+    cleaned = [value for value in values if not math.isnan(value)]
+    if not cleaned:
+        return None
+    return float(np.percentile(cleaned, percentile))
 
 
 def _is_invalid_rejection(response: str) -> bool:
@@ -519,25 +731,143 @@ def build_metrics(
     expected_provision_counts: list[int] = []
     context_precision_scores: list[float] = []
     context_recall_scores: list[float] = []
+    retrieval_recall_scores: list[float] = []
+    reciprocal_rank_scores: list[float] = []
+    duplicate_rate_scores: list[float] = []
+    retrieval_failed_scores: list[float] = []
+    no_match_scores: list[float] = []
+    exact_citation_scores: list[float] = []
+    retrieval_latencies: list[float] = []
+    ranking_latencies: list[float] = []
+    selection_latencies: list[float] = []
+    generation_latencies: list[float] = []
+    total_latencies: list[float] = []
 
     for index, (sample, prediction) in enumerate(usable_samples):
         response = _get_generated_response(prediction)
-        parsed_contexts = _flatten_contexts(prediction.get("retrieved_contexts", []))
-        total_retrieved_contexts = _count_retrieved_contexts(
+        trace = _extract_retrieval_trace(prediction)
+        trace_contexts = _trace_contexts(prediction, trace)
+        parsed_contexts = _flatten_contexts(
             prediction.get("retrieved_contexts", [])
         )
-        expected_provision_set = _normalized_expected_provision_set(
-            sample.expected_provision_numbers
+        total_retrieved_contexts = len(trace_contexts)
+        expected_supporting_set = _supporting_ids_from_sample(sample)
+        retrieved_supporting_ids = _unique_support_units(trace_contexts)
+        retrieved_chunk_ids = [
+            _trace_context_chunk_identity(context)
+            for context in trace_contexts
+        ]
+        source_supporting_ids = [
+            supporting_id
+            for source in (
+                prediction.get("sources")
+                if isinstance(prediction.get("sources"), list)
+                else []
+            )
+            if isinstance(source, dict)
+            for supporting_id in [_source_identity(source)]
+            if supporting_id
+        ]
+        matched_supporting_set = (
+            expected_supporting_set
+            & set(
+                retrieved_supporting_ids
+            )
         )
-        retrieved_provision_set = _normalized_retrieved_provision_set(
-            parsed_contexts,
-            sample.expected_document_id,
-            sample.expected_provision_type,
+        expected_provision_count = len(expected_supporting_set)
+        matched_context_count = len(matched_supporting_set)
+        duplicate_context_rate = (
+            1.0
+            - (
+                len(set(retrieved_chunk_ids))
+                / len(retrieved_chunk_ids)
+            )
+            if retrieved_chunk_ids
+            else 0.0
         )
-        matched_provision_set = expected_provision_set & retrieved_provision_set
-        expected_provision_count = len(expected_provision_set)
-        matched_context_count = len(matched_provision_set)
-
+        top_k_ids = retrieved_supporting_ids[:hit_k]
+        top_k_hit = bool(
+            expected_supporting_set
+            and expected_supporting_set.intersection(top_k_ids)
+        )
+        first_match_rank = next(
+            (
+                position
+                for position, identity in enumerate(
+                    retrieved_supporting_ids,
+                    start=1,
+                )
+                if identity in expected_supporting_set
+            ),
+            None,
+        )
+        retrieval_recall_at_k = (
+            len(
+                expected_supporting_set.intersection(top_k_ids)
+            )
+            / expected_provision_count
+            if expected_provision_count
+            else 0.0
+        )
+        reciprocal_rank = (
+            1.0 / first_match_rank
+            if first_match_rank
+            else 0.0
+        )
+        exact_citation_completeness = (
+            len(
+                expected_supporting_set.intersection(
+                    set(
+                        item
+                        for item in source_supporting_ids
+                        if item
+                    )
+                )
+            )
+            / expected_provision_count
+            if expected_provision_count
+            else 0.0
+        )
+        trace_timings = (
+            trace.get("timings_ms")
+            if isinstance(trace, dict)
+            else {}
+        )
+        retrieval_latency = (
+            float(trace_timings.get("retrieval"))
+            if isinstance(trace_timings, dict)
+            and trace_timings.get("retrieval") is not None
+            else None
+        )
+        ranking_latency = (
+            float(trace_timings.get("ranking"))
+            if isinstance(trace_timings, dict)
+            and trace_timings.get("ranking") is not None
+            else None
+        )
+        selection_latency = (
+            float(trace_timings.get("selection"))
+            if isinstance(trace_timings, dict)
+            and trace_timings.get("selection") is not None
+            else None
+        )
+        generation_latency = (
+            float(trace_timings.get("generation"))
+            if isinstance(trace_timings, dict)
+            and trace_timings.get("generation") is not None
+            else None
+        )
+        total_latency = (
+            float(trace_timings.get("total"))
+            if isinstance(trace_timings, dict)
+            and trace_timings.get("total") is not None
+            else None
+        )
+        retrieval_status = str(
+            trace.get("retrieval_status") if isinstance(trace, dict) else ""
+        ).strip().lower()
+        retrieval_failed = 1.0 if retrieval_status == "error" else 0.0
+        no_match = 1.0 if retrieval_status == "no_match" else 0.0
         document_hit = _contains_expected_document(
             parsed_contexts,
             sample.expected_document_id,
@@ -558,12 +888,12 @@ def build_metrics(
         citation_present = _has_citation(response)
         cosine_similarity = cosine_scores[index]
         context_precision_local = (
-            matched_context_count / total_retrieved_contexts
-            if total_retrieved_contexts
+            matched_context_count / len(retrieved_supporting_ids)
+            if retrieved_supporting_ids
             else 0.0
         )
         context_recall_local = (
-            len(matched_provision_set) / expected_provision_count
+            matched_context_count / expected_provision_count
             if expected_provision_count
             else 0.0
         )
@@ -586,11 +916,28 @@ def build_metrics(
         expected_provision_counts.append(expected_provision_count)
         context_precision_scores.append(context_precision_local)
         context_recall_scores.append(context_recall_local)
+        retrieval_recall_scores.append(retrieval_recall_at_k)
+        reciprocal_rank_scores.append(reciprocal_rank)
+        duplicate_rate_scores.append(duplicate_context_rate)
+        retrieval_failed_scores.append(retrieval_failed)
+        no_match_scores.append(no_match)
+        exact_citation_scores.append(exact_citation_completeness)
+        if retrieval_latency is not None:
+            retrieval_latencies.append(retrieval_latency)
+        if ranking_latency is not None:
+            ranking_latencies.append(ranking_latency)
+        if selection_latency is not None:
+            selection_latencies.append(selection_latency)
+        if generation_latency is not None:
+            generation_latencies.append(generation_latency)
+        if total_latency is not None:
+            total_latencies.append(total_latency)
 
         matrix_rows.append(
             {
                 "sample_id": sample.sample_id,
                 "sample_key": sample.sample_key,
+                "dataset_version": sample.dataset_version or "",
                 "category": sample.category,
                 "expected_document_id": sample.expected_document_id or "",
                 "expected_provision_type": sample.expected_provision_type or "",
@@ -607,11 +954,47 @@ def build_metrics(
                 "expected_provision_count": expected_provision_count,
                 "context_precision_local": context_precision_local,
                 "context_recall_local": context_recall_local,
+                f"retrieval_recall_at_{hit_k}": retrieval_recall_at_k,
+                "reciprocal_rank": reciprocal_rank,
+                "duplicate_context_rate": duplicate_context_rate,
+                "retrieval_failed": retrieval_failed,
+                "no_match": no_match,
+                "exact_citation_completeness": exact_citation_completeness,
+                "retrieval_latency_ms": retrieval_latency
+                if retrieval_latency is not None
+                else "",
+                "ranking_latency_ms": ranking_latency
+                if ranking_latency is not None
+                else "",
+                "selection_latency_ms": selection_latency
+                if selection_latency is not None
+                else "",
+                "generation_latency_ms": generation_latency
+                if generation_latency is not None
+                else "",
+                "total_latency_ms": total_latency
+                if total_latency is not None
+                else "",
             }
         )
 
+    dataset_versions = sorted(
+        {
+            sample.dataset_version
+            for sample in samples
+            if sample.dataset_version
+        }
+    )
+    if len(dataset_versions) == 1:
+        dataset_version_value: str | list[str] | None = dataset_versions[0]
+    elif dataset_versions:
+        dataset_version_value = dataset_versions
+    else:
+        dataset_version_value = None
+
     summary = {
         "sample_count": len(samples),
+        "dataset_version": dataset_version_value,
         "metrics": {
             "document_accuracy": _safe_mean(document_scores),
             f"retrieval_hit_at_{hit_k}": _safe_mean(hit_scores),
@@ -623,6 +1006,31 @@ def build_metrics(
             ),
             "context_precision_local": _safe_mean(context_precision_scores),
             "context_recall_local": _safe_mean(context_recall_scores),
+            f"retrieval_recall_at_{hit_k}": _safe_mean(
+                retrieval_recall_scores
+            ),
+            "reciprocal_rank": _safe_mean(reciprocal_rank_scores),
+            "duplicate_context_rate": _safe_mean(duplicate_rate_scores),
+            "retrieval_failed_rate": _safe_mean(
+                retrieval_failed_scores
+            ),
+            "no_match_rate": _safe_mean(no_match_scores),
+            "exact_citation_completeness": _safe_mean(
+                exact_citation_scores
+            ),
+            "retrieval_latency_ms": _safe_mean(retrieval_latencies),
+            "ranking_latency_ms": _safe_mean(ranking_latencies),
+            "selection_latency_ms": _safe_mean(selection_latencies),
+            "generation_latency_ms": _safe_mean(generation_latencies),
+            "total_latency_ms": _safe_mean(total_latencies),
+            "total_latency_ms_p50": _safe_percentile(
+                total_latencies,
+                50.0,
+            ),
+            "total_latency_ms_p95": _safe_percentile(
+                total_latencies,
+                95.0,
+            ),
         },
         "counts": {
             "samples_with_predictions": sum(
@@ -635,6 +1043,17 @@ def build_metrics(
             ),
             "nonexistent_provision_samples": sum(
                 1 for sample in samples if sample.category == "nonexistent_provision"
+            ),
+            "retrieval_failed_samples": int(
+                sum(retrieval_failed_scores)
+            ),
+            "no_match_samples": int(sum(no_match_scores)),
+            "samples_with_traces": sum(
+                1
+                for sample in samples
+                if _extract_retrieval_trace(
+                    _resolve_prediction(sample, predictions) or {}
+                )
             ),
         },
         "hit_k": hit_k,

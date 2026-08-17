@@ -370,7 +370,7 @@ def test_rank_candidates_keeps_bm25_out_of_semantic_similarity() -> None:
         semantic_threshold=0.85,
     )
 
-    assert ranked[0].relevance_score == 0.0
+    assert ranked[0].relevance_score is None
     assert ranked[0].fusion_score > 0.0
 
 

@@ -23,7 +23,7 @@ RAG configuration:
 - Qdrant collection: `pakistan_legal_knowledge_base`
 - Embeddings: `sentence-transformers/all-MiniLM-L6-v2`
 - Vector size: `384`
-- Answer model: `llama-3.3-70b-versatile`
+- Answer model: `openai/gpt-oss-120b`
 - Existing RAG code: `../rag/`
 
 ## Roles

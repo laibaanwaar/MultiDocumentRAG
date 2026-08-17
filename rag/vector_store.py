@@ -20,6 +20,10 @@ from rag.embeddings import (
     get_embedding_dimension,
     get_embedding_model,
 )
+from rag.metadata_schema import (
+    audit_collection_metadata,
+    format_metadata_audit_result,
+)
 
 
 load_dotenv()
@@ -97,6 +101,10 @@ PAYLOAD_INDEXES: tuple[
         PayloadSchemaType.KEYWORD,
     ),
     (
+        f"{METADATA_PAYLOAD_KEY}.provision_ordinal",
+        PayloadSchemaType.INTEGER,
+    ),
+    (
         f"{METADATA_PAYLOAD_KEY}.section_number",
         PayloadSchemaType.KEYWORD,
     ),
@@ -122,6 +130,14 @@ PAYLOAD_INDEXES: tuple[
     ),
     (
         f"{METADATA_PAYLOAD_KEY}.base_provision_number",
+        PayloadSchemaType.KEYWORD,
+    ),
+    (
+        f"{METADATA_PAYLOAD_KEY}.previous_provision_number",
+        PayloadSchemaType.KEYWORD,
+    ),
+    (
+        f"{METADATA_PAYLOAD_KEY}.next_provision_number",
         PayloadSchemaType.KEYWORD,
     ),
     (
@@ -364,6 +380,28 @@ def validate_existing_collection(
     )
 
     if dimension_matches and distance_matches:
+        metadata_audit = audit_collection_metadata(
+            client=client,
+            collection_name=COLLECTION_NAME,
+            metadata_payload_key=METADATA_PAYLOAD_KEY,
+        )
+
+        if metadata_audit.invalid_points == 0:
+            return
+
+        audit_message = format_metadata_audit_result(
+            metadata_audit,
+            collection_name=COLLECTION_NAME,
+        )
+
+        if STRICT_COLLECTION_VALIDATION:
+            raise RuntimeError(
+                f"{audit_message}\n"
+                "The collection metadata is incompatible or corrupt. "
+                "Run ingestion with --reset to recreate the collection."
+            )
+
+        print(f"Warning: {audit_message}")
         return
 
     mismatch_details: list[str] = []
