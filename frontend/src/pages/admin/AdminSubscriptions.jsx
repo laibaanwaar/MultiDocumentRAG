@@ -268,7 +268,7 @@ export default function AdminSubscriptions() {
   const showingTo = count === 0 ? 0 : showingFrom + subscriptions.length - 1;
 
   return (
-    <section className="overflow-hidden rounded-[12px] border border-[#eadfce] bg-white shadow-[0_8px_18px_rgba(15,23,42,0.04)]">
+    <section className="overflow-hidden rounded-[12px] border border-[#eadfce] bg-white text-[#111827] shadow-[0_8px_18px_rgba(15,23,42,0.04)]">
       <div className="border-b border-[#f1eadf] px-6 py-5">
         <h2 className="text-[28px] font-serif font-bold leading-none text-[#111827]">Subscriptions</h2>
         <p className="mt-2 text-[14px] text-slate-500">Manage user subscriptions and their status.</p>
@@ -285,7 +285,7 @@ export default function AdminSubscriptions() {
               onChange={(event) => setSearch(event.target.value)}
               placeholder="Search by username or email..."
               style={{ color: '#111827' }}
-              className="w-full min-w-0 bg-transparent text-[14px] !text-black outline-none placeholder:!text-black"
+              className="w-full min-w-0 bg-transparent text-[14px] outline-none placeholder:text-[#64748b]"
             />
           </label>
 
@@ -293,7 +293,7 @@ export default function AdminSubscriptions() {
             value={selectedPlan}
             onChange={handlePlanChange}
             style={{ color: '#111827' }}
-            className="h-11 rounded-[10px] border border-[#e3d8c7] bg-white px-3 text-[14px] !text-black outline-none"
+            className="h-11 rounded-[10px] border border-[#e3d8c7] bg-white px-3 text-[14px] outline-none"
           >
             <option value="">All Plans</option>
             {planOptions.map((plan) => (
@@ -307,10 +307,9 @@ export default function AdminSubscriptions() {
             value={selectedStatus}
             onChange={handleStatusChange}
             style={{ color: '#111827' }}
-            className="h-11 rounded-[10px] border border-[#e3d8c7] bg-white px-3 text-[14px] !text-black outline-none"
+            className="h-11 rounded-[10px] border border-[#e3d8c7] bg-white px-3 text-[14px] outline-none"
           >
-            <option value="">All Status</option>
-            <option value="active">Active</option>
+                        <option value="active">Active</option>
             <option value="inactive">Inactive</option>
             <option value="cancelled">Cancelled</option>
             <option value="expired">Expired</option>
@@ -323,7 +322,7 @@ export default function AdminSubscriptions() {
               disabled
               placeholder="Start Date"
               style={{ color: '#111827' }}
-              className="w-full bg-transparent text-[14px] !text-black outline-none placeholder:!text-black disabled:!text-black disabled:opacity-100"
+              className="w-full bg-transparent text-[14px] outline-none placeholder:text-[#64748b] disabled:opacity-100"
             />
           </label>
 
@@ -334,7 +333,7 @@ export default function AdminSubscriptions() {
               disabled
               placeholder="End Date"
               style={{ color: '#111827' }}
-              className="w-full bg-transparent text-[14px] !text-black outline-none placeholder:!text-black disabled:!text-black disabled:opacity-100"
+              className="w-full bg-transparent text-[14px] outline-none placeholder:text-[#64748b] disabled:opacity-100"
             />
           </label>
 
@@ -347,7 +346,7 @@ export default function AdminSubscriptions() {
           </button>
         </div>
 
-        <div className="mt-5 overflow-hidden rounded-[12px] border border-[#eee7db] bg-white">
+        <div className="mt-5 overflow-hidden rounded-[12px] border border-[#eee7db] bg-white text-[#111827]">
           <div className="overflow-x-auto">
             <table className="min-w-[1080px] w-full border-collapse text-left">
               <thead>

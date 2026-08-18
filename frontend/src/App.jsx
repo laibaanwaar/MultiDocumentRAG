@@ -1,4 +1,4 @@
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+﻿import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import Chatbot from './pages/Chatbot';
 import Home from './pages/Home';
 import HowItWorksPage from './pages/HowItWorksPage';
@@ -6,6 +6,7 @@ import Login from './pages/Login';
 import AdminLayout from './layouts/AdminLayout';
 import AdminRoute from './routes/AdminRoute';
 import AdminDashboard from './pages/admin/AdminDashboard';
+import AdminDocumentsPage from './pages/admin/AdminDocumentsPage';
 import AdminPlans from './pages/admin/AdminPlans';
 import AdminSettings from './pages/admin/AdminSettings';
 import AdminSubscriptions from './pages/admin/AdminSubscriptions';
@@ -35,6 +36,7 @@ export default function App() {
             <Route path="users/:userId" element={<AdminUserDetail />} />
             <Route path="subscriptions" element={<AdminSubscriptions />} />
             <Route path="plans" element={<AdminPlans />} />
+            <Route path="documents" element={<AdminDocumentsPage />} />
             <Route path="settings" element={<AdminSettings />} />
             <Route index element={<Navigate to="/admin/dashboard" replace />} />
           </Route>

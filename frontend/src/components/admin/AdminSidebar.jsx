@@ -40,6 +40,17 @@ function SidebarIcon({ type }) {
     );
   }
 
+  if (type === 'documents') {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={common}>
+        <path d="M7.5 3.75h6.2L18.5 8.4V20.25H7.5V3.75Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+        <path d="M13.2 3.75V8.4h5.3" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+        <path d="M10 13h4M10 16h4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        <path d="M7 20.25H5.5A1.5 1.5 0 0 1 4 18.75V9.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      </svg>
+    );
+  }
+
   if (type === 'settings') {
     return (
       <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={common}>
@@ -60,7 +71,7 @@ const navItems = [
   { label: 'Dashboard', path: '/admin/dashboard', icon: 'dashboard' },
   { label: 'Users', path: '/admin/users', icon: 'users' },
   { label: 'Subscriptions', path: '/admin/subscriptions', icon: 'subscriptions' },
-  { label: 'Plans', path: '/admin/plans', icon: 'plans' }
+  { label: 'Upload PDF', path: '/admin/documents', icon: 'documents' }
 ];
 
 export default function AdminSidebar({ onLogout }) {

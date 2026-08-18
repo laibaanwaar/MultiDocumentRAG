@@ -33,6 +33,7 @@ from documents.services.legal_document_service import (
     create_legal_document,
     get_legal_document_or_404,
     get_legal_documents_queryset,
+    process_legal_document_ingestion,
     update_legal_document,
 )
 
@@ -164,6 +165,9 @@ class LegalDocumentController(APIView):
             document = create_legal_document(
                 validated_data=serializer.validated_data,
                 uploaded_by=request.user,
+            )
+            document = process_legal_document_ingestion(
+                document_id=document.pk,
             )
         except APIException:
             raise

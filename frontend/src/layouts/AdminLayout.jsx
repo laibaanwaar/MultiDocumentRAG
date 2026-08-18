@@ -1,4 +1,4 @@
-import { Outlet, useLocation, useNavigate } from 'react-router-dom';
+﻿import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import AdminHeader from '../components/admin/AdminHeader';
 import AdminSidebar from '../components/admin/AdminSidebar';
 import {
@@ -24,6 +24,10 @@ const pageMeta = {
   '/admin/plans': {
     title: 'Plans',
     subtitle: 'Plan management UI is ready for backend list integration.'
+  },
+  '/admin/documents': {
+    title: 'Upload PDF Documents',
+    subtitle: 'Upload and manage legal documents for AI search.'
   },
   '/admin/settings': {
     title: 'Settings',

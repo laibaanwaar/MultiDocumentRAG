@@ -22,6 +22,9 @@ from documents.legal_document_exceptions import (
     LegalDocumentNotFoundError,
 )
 from documents.models import DocumentCategory, LegalDocument
+from documents.services.document_ingestion_service import (
+    ingest_uploaded_document,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -207,6 +210,139 @@ def build_legal_document_rag_metadata(
         "uploaded_by_id": document.uploaded_by_id,
         "ingestion_error": document.ingestion_error,
     }
+
+
+def _infer_uploaded_document_provision_type(
+    document: LegalDocument,
+) -> str:
+    category_text = " ".join(
+        [
+            str(document.category.code or ""),
+            str(document.category.name or ""),
+            str(document.title or ""),
+            str(document.original_filename or ""),
+        ]
+    ).lower()
+
+    if "constitution" in category_text:
+        return "article"
+
+    return "section"
+
+
+def _build_uploaded_document_ingestion_metadata(
+    document: LegalDocument,
+) -> dict[str, object]:
+    metadata = build_legal_document_rag_metadata(document)
+
+    metadata.update(
+        {
+            "document_name": document.original_filename,
+            "document_short_name": Path(
+                document.original_filename
+            ).stem
+            or document.title,
+            "document_type": "legal_document",
+            "provision_type": _infer_uploaded_document_provision_type(
+                document
+            ),
+            "source_path": str(document.file.path),
+            "source_file_name": document.file.name,
+        }
+    )
+
+    return metadata
+
+
+def _set_document_ingestion_state(
+    *,
+    document_id: int,
+    status: str,
+    ingestion_error: str | None,
+) -> LegalDocument:
+    with transaction.atomic():
+        document = (
+            LegalDocument.objects
+            .select_for_update()
+            .select_related(
+                "category",
+                "uploaded_by",
+            )
+            .get(pk=document_id)
+        )
+
+        document.status = status
+        document.ingestion_error = ingestion_error
+        document.save(
+            update_fields=[
+                "status",
+                "ingestion_error",
+                "updated_at",
+            ]
+        )
+
+    return document
+
+
+def _format_ingestion_error(error: Exception) -> str:
+    message = f"{error.__class__.__name__}: {error}"
+
+    return message[:4000]
+
+
+def process_legal_document_ingestion(
+    *,
+    document_id: int,
+) -> LegalDocument:
+    document = _set_document_ingestion_state(
+        document_id=document_id,
+        status=LegalDocument.Status.PROCESSING,
+        ingestion_error=None,
+    )
+
+    ingestion_metadata = _build_uploaded_document_ingestion_metadata(
+        document
+    )
+
+    try:
+        ingest_uploaded_document(
+            file_path=document.file.path,
+            document_id=str(document.pk),
+            document_name=ingestion_metadata["document_name"],
+            document_title=document.title,
+            document_short_name=ingestion_metadata["document_short_name"],
+            document_type=str(
+                ingestion_metadata["document_type"]
+            ),
+            provision_type=str(
+                ingestion_metadata["provision_type"]
+            ),
+            metadata=ingestion_metadata,
+        )
+    except Exception as error:
+        logger.exception(
+            "Uploaded legal document ingestion failed id=%s",
+            document_id,
+        )
+
+        try:
+            return _set_document_ingestion_state(
+                document_id=document_id,
+                status=LegalDocument.Status.FAILED,
+                ingestion_error=_format_ingestion_error(error),
+            )
+        except DatabaseError:
+            logger.exception(
+                "Failed to persist failed ingestion status for legal document id=%s",
+                document_id,
+            )
+            raise
+
+    return _set_document_ingestion_state(
+        document_id=document_id,
+        status=LegalDocument.Status.READY,
+        ingestion_error=None,
+    )
 
 
 def get_legal_documents_queryset(

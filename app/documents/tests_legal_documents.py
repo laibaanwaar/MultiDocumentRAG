@@ -8,6 +8,8 @@ from django.test import override_settings
 from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework_simplejwt.tokens import AccessToken
 from rest_framework.test import APITestCase
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from documents.models import DocumentCategory, LegalDocument
 
@@ -100,39 +102,130 @@ class LegalDocumentAPITests(APITestCase):
             content_type="application/pdf",
         )
 
-    def _create_document(self, *, title, category, name="document.pdf", label="one"):
-        response = self.client.post(
-            "/api/v1/documents/",
-            {
-                "title": title,
-                "category_id": category.id,
-                "file": self._pdf_upload(name=name, label=label),
-            },
-            format="multipart",
-            **self._staff_headers(email=f"{label}@example.com"),
-        )
+    def _create_document(
+        self,
+        *,
+        title,
+        category,
+        name="document.pdf",
+        label="one",
+        ingest=False,
+    ):
+        request_kwargs = {
+            "title": title,
+            "category_id": category.id,
+            "file": self._pdf_upload(name=name, label=label),
+        }
+
+        headers = self._staff_headers(email=f"{label}@example.com")
+
+        if ingest:
+            response = self.client.post(
+                "/api/v1/documents/",
+                request_kwargs,
+                format="multipart",
+                **headers,
+            )
+        else:
+            with patch(
+                "documents.controllers.legal_document_controller.process_legal_document_ingestion",
+                side_effect=lambda *, document_id: LegalDocument.objects.select_related(
+                    "category",
+                    "uploaded_by",
+                ).get(pk=document_id),
+            ):
+                response = self.client.post(
+                    "/api/v1/documents/",
+                    request_kwargs,
+                    format="multipart",
+                    **headers,
+                )
+
         self.assertEqual(response.status_code, 201)
         return response
 
     def test_admin_can_create_legal_document(self):
         category = self._create_category()
 
-        response = self.client.post(
-            "/api/v1/documents/",
-            {
-                "title": "Pakistan Penal Code",
-                "category_id": category.id,
-                "file": self._pdf_upload(name="Pakistan Penal Code.pdf", label="create"),
-            },
-            format="multipart",
-            **self._staff_headers(email="create-admin@example.com"),
-        )
+        with patch(
+            "documents.services.legal_document_service.ingest_uploaded_document",
+            return_value=None,
+        ):
+            response = self.client.post(
+                "/api/v1/documents/",
+                {
+                    "title": "Pakistan Penal Code",
+                    "category_id": category.id,
+                    "file": self._pdf_upload(name="Pakistan Penal Code.pdf", label="create"),
+                },
+                format="multipart",
+                **self._staff_headers(email="create-admin@example.com"),
+            )
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data["message"], "Legal document created successfully.")
         self.assertEqual(response.data["data"]["title"], "Pakistan Penal Code")
-        self.assertEqual(response.data["data"]["status"], "PENDING")
+        self.assertEqual(response.data["data"]["status"], "READY")
         self.assertTrue(LegalDocument.objects.filter(title="Pakistan Penal Code").exists())
+
+    def test_admin_upload_triggers_ingestion_and_marks_ready(self):
+        category = self._create_category()
+
+        with patch(
+            "documents.services.legal_document_service.ingest_uploaded_document",
+            return_value=None,
+        ) as mock_ingest:
+            response = self.client.post(
+                "/api/v1/documents/",
+                {
+                    "title": "Ingestion Ready Document",
+                    "category_id": category.id,
+                    "file": self._pdf_upload(name="ingestion-ready.pdf", label="ready"),
+                },
+                format="multipart",
+                **self._staff_headers(email="ready-admin@example.com"),
+            )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["data"]["status"], "READY")
+
+        document = LegalDocument.objects.get(pk=response.data["data"]["id"])
+        self.assertEqual(document.status, LegalDocument.Status.READY)
+        self.assertEqual(
+            mock_ingest.call_args.kwargs["document_id"],
+            str(document.pk),
+        )
+        self.assertEqual(
+            mock_ingest.call_args.kwargs["metadata"]["document_id"],
+            str(document.pk),
+        )
+
+    def test_failed_ingestion_marks_document_failed_and_preserves_row(self):
+        category = self._create_category()
+
+        with patch(
+            "documents.services.legal_document_service.ingest_uploaded_document",
+            side_effect=RuntimeError("ingestion exploded"),
+        ):
+            response = self.client.post(
+                "/api/v1/documents/",
+                {
+                    "title": "Broken Ingestion Document",
+                    "category_id": category.id,
+                    "file": self._pdf_upload(name="ingestion-failed.pdf", label="failed"),
+                },
+                format="multipart",
+                **self._staff_headers(email="failed-admin@example.com"),
+            )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["data"]["status"], "FAILED")
+        self.assertIn("ingestion exploded", response.data["data"]["ingestion_error"])
+
+        document = LegalDocument.objects.get(pk=response.data["data"]["id"])
+        self.assertEqual(document.status, LegalDocument.Status.FAILED)
+        self.assertIn("ingestion exploded", document.ingestion_error)
+        self.assertTrue(Path(document.file.path).exists())
 
     def test_unauthenticated_user_gets_401_on_create(self):
         category = self._create_category()
@@ -283,24 +376,32 @@ class LegalDocumentAPITests(APITestCase):
             "category_id": category.id,
             "file": self._pdf_upload(name="first.pdf", label="duplicate"),
         }
-        first = self.client.post(
-            "/api/v1/documents/",
-            payload,
-            format="multipart",
-            **self._staff_headers(email="dup-first@example.com"),
-        )
+        with patch(
+            "documents.services.legal_document_service.ingest_uploaded_document",
+            return_value=None,
+        ):
+            first = self.client.post(
+                "/api/v1/documents/",
+                payload,
+                format="multipart",
+                **self._staff_headers(email="dup-first@example.com"),
+            )
         self.assertEqual(first.status_code, 201)
 
-        second = self.client.post(
-            "/api/v1/documents/",
-            {
-                "title": "Pakistan Penal Code Copy",
-                "category_id": category.id,
-                "file": self._pdf_upload(name="second.pdf", label="duplicate"),
-            },
-            format="multipart",
-            **self._staff_headers(email="dup-second@example.com"),
-        )
+        with patch(
+            "documents.services.legal_document_service.ingest_uploaded_document",
+            return_value=None,
+        ):
+            second = self.client.post(
+                "/api/v1/documents/",
+                {
+                    "title": "Pakistan Penal Code Copy",
+                    "category_id": category.id,
+                    "file": self._pdf_upload(name="second.pdf", label="duplicate"),
+                },
+                format="multipart",
+                **self._staff_headers(email="dup-second@example.com"),
+            )
 
         self.assertEqual(second.status_code, 409)
         self.assertEqual(second.data["code"], "DOCUMENT_ALREADY_EXISTS")
@@ -308,16 +409,20 @@ class LegalDocumentAPITests(APITestCase):
     def test_filename_is_sanitized(self):
         category = self._create_category()
 
-        response = self.client.post(
-            "/api/v1/documents/",
-            {
-                "title": "Path Traversal Test",
-                "category_id": category.id,
-                "file": self._pdf_upload(name="../../evil.pdf", label="traversal"),
-            },
-            format="multipart",
-            **self._staff_headers(email="traversal@example.com"),
-        )
+        with patch(
+            "documents.services.legal_document_service.ingest_uploaded_document",
+            return_value=None,
+        ):
+            response = self.client.post(
+                "/api/v1/documents/",
+                {
+                    "title": "Path Traversal Test",
+                    "category_id": category.id,
+                    "file": self._pdf_upload(name="../../evil.pdf", label="traversal"),
+                },
+                format="multipart",
+                **self._staff_headers(email="traversal@example.com"),
+            )
 
         self.assertEqual(response.status_code, 201)
         document = LegalDocument.objects.get(pk=response.data["data"]["id"])
@@ -489,6 +594,89 @@ class LegalDocumentAPITests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["data"]["status"], "PENDING")
 
+    def test_uploaded_document_ingestion_uses_document_id_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "uploaded.pdf"
+            pdf_path.write_text("ignored by PdfReader patch", encoding="utf-8")
+
+            fake_reader = type(
+                "FakeReader",
+                (),
+                {
+                    "pages": [
+                        type(
+                            "FakePage",
+                            (),
+                            {
+                                "extract_text": lambda self: (
+                                    "This uploaded PDF page contains substantive legal text "
+                                    "about obligations, penalties, and enforcement mechanisms. "
+                                    "It is a real paragraph rather than a heading-only page."
+                                )
+                            },
+                        )(),
+                        type(
+                            "FakePage",
+                            (),
+                            {
+                                "extract_text": lambda self: (
+                                    "This second page continues the discussion with additional "
+                                    "legal detail, factual context, and supporting explanation "
+                                    "so the chunker can retain useful text."
+                                )
+                            },
+                        )(),
+                    ]
+                },
+            )()
+
+            class FakeVectorStore:
+                def __init__(self):
+                    self.calls = []
+
+                def add_documents(self, documents, ids):
+                    self.calls.append((documents, ids))
+
+            class FakeClient:
+                def close(self):
+                    pass
+
+            fake_store = FakeVectorStore()
+
+            with patch(
+                "documents.services.document_ingestion_service.PdfReader",
+                return_value=fake_reader,
+            ), patch(
+                "documents.services.document_ingestion_service.create_vector_store",
+                return_value=(fake_store, FakeClient()),
+            ):
+                from documents.services.document_ingestion_service import (
+                    ingest_uploaded_document,
+                )
+
+                result = ingest_uploaded_document(
+                    file_path=pdf_path,
+                    document_id="123",
+                    document_name="uploaded.pdf",
+                    document_title="Uploaded PDF",
+                    document_short_name="Uploaded",
+                    metadata={
+                        "category_id": 7,
+                        "category_code": "UPLD",
+                        "category_name": "Uploaded",
+                    },
+                )
+
+        self.assertEqual(result.document_id, "123")
+        self.assertGreaterEqual(result.chunk_count, 1)
+        self.assertEqual(len(fake_store.calls), 1)
+
+        stored_documents, stored_ids = fake_store.calls[0]
+        self.assertEqual(len(stored_documents), len(stored_ids))
+        self.assertTrue(all(chunk.metadata["document_id"] == "123" for chunk in stored_documents))
+        self.assertTrue(all(chunk.metadata["source_file_name"] == "uploaded.pdf" for chunk in stored_documents))
+        self.assertTrue(all(isinstance(chunk.metadata["chunk_id"], str) for chunk in stored_documents))
+
     def test_delete_archives_document(self):
         category = self._create_category()
         create_response = self._create_document(
@@ -537,3 +725,61 @@ class LegalDocumentAPITests(APITestCase):
         self.assertEqual(response.status_code, 204)
         document.refresh_from_db()
         self.assertEqual(document.status, LegalDocument.Status.ARCHIVED)
+
+    def test_qdrant_delete_targets_only_matching_document_id(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = QdrantClient(path=temp_dir)
+            client.create_collection(
+                collection_name="pakistan_legal_knowledge_base",
+                vectors_config=VectorParams(size=3, distance=Distance.COSINE),
+            )
+            client.upsert(
+                collection_name="pakistan_legal_knowledge_base",
+                points=[
+                    PointStruct(
+                        id="11111111-1111-1111-1111-111111111111",
+                        vector=[0.1, 0.2, 0.3],
+                        payload={
+                            "metadata": {
+                                "document_id": "123",
+                                "chunk_id": "123::section::1::part-1::chunk-1",
+                            }
+                        },
+                    ),
+                    PointStruct(
+                        id="22222222-2222-2222-2222-222222222222",
+                        vector=[0.3, 0.2, 0.1],
+                        payload={
+                            "metadata": {
+                                "document_id": "static-doc",
+                                "chunk_id": "static-doc::section::1::part-1::chunk-1",
+                            }
+                        },
+                    ),
+                ],
+            )
+            client.close()
+
+            with patch(
+                "documents.services.legal_document_service.QDRANT_STORAGE_PATH",
+                temp_dir,
+            ):
+                from documents.services.legal_document_service import (
+                    _delete_qdrant_points,
+                )
+
+                _delete_qdrant_points("123")
+
+            verifier = QdrantClient(path=temp_dir)
+            remaining_points, _ = verifier.scroll(
+                collection_name="pakistan_legal_knowledge_base",
+                with_payload=True,
+                with_vectors=False,
+            )
+            verifier.close()
+
+            self.assertEqual(len(remaining_points), 1)
+            self.assertEqual(
+                remaining_points[0].payload["metadata"]["document_id"],
+                "static-doc",
+            )
